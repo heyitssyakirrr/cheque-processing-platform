@@ -64,7 +64,7 @@ def _write_csv(output_dir: Path, records: list[dict[str, Any]]) -> None:
 def detect(
     image: np.ndarray,
     output_dir: Path,
-    decision_threshold: float = 0.50,
+    decision_threshold: float = 0.25,
     logging_floor: float = 0.10,
 ) -> list[dict[str, Any]]:
     """Detect signatures and save annotated image, accepted crops, and CSV."""
