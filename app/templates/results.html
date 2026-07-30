@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Analysis results | Cheque Intelligence</title><link rel="stylesheet" href="/static/site.css"></head>
+<body>
+  <header class="topbar"><a class="brand" href="/"><span class="brand-mark">P</span><span><strong>PUBLIC BANK</strong><small>BERHAD · CHEQUE INTELLIGENCE</small></span></a><a class="outline-button" href="/">+ New upload</a></header>
+  <main class="results-page">
+    <div class="results-heading"><div><p class="eyebrow">ANALYSIS COMPLETE</p><h1>{{ results|length }} cheque{{ '' if results|length == 1 else 's' }} processed</h1><p>Review the extracted information and supporting evidence for each uploaded image.</p></div><span class="success-chip">● Complete</span></div>
+    <section class="summary-strip"><div><small>Images processed</small><strong>{{ results|length }}</strong></div><div><small>Signatures detected</small><strong>{{ results|selectattr('result.signature.exists')|list|length }}</strong></div><div><small>Dates read</small><strong>{{ results|selectattr('result.date.date')|list|length }}</strong></div></section>
+    <section class="result-list">
+    {% for item in results %}
+      <article class="cheque-card" id="{{ item.run_id }}">
+        <div class="cheque-card-header"><div><span class="result-number">{{ '%02d'|format(loop.index) }}</span><h2>{{ item.filename }}</h2><small>Run ID: {{ item.run_id }}</small></div><a class="download-link" href="/runs/{{ item.run_id }}/result.json">Download JSON ↓</a></div>
+        <div class="metric-grid"><div class="metric"><small>Signature</small><strong class="{{ 'positive' if item.result.signature.exists else 'neutral' }}">{{ 'Detected' if item.result.signature.exists else 'Not detected' }}</strong><span>{{ item.result.signature.detections|length }} candidate(s)</span></div><div class="metric"><small>Handwritten date</small><strong>{{ item.result.date.date or 'Review needed' }}</strong><span>{{ item.result.date.status|replace('_', ' ')|title }}</span></div><div class="metric"><small>Payee candidate</small><strong>{{ item.result.fields.payee_candidate or 'Not found' }}</strong><span>OCR-assisted · review required</span></div><div class="metric"><small>Amount candidate</small><strong>{{ item.result.fields.amount_candidate or 'Not found' }}</strong><span>OCR-assisted · review required</span></div></div>
+        <div class="artifact-grid"><figure><div class="image-frame"><img src="/runs/{{ item.run_id }}/signature/annotated.png" alt="Signature detection annotation"></div><figcaption><span>Signature detection</span><a href="/runs/{{ item.run_id }}/signature/detections.csv">CSV ↓</a></figcaption></figure><figure><div class="image-frame"><img src="/runs/{{ item.run_id }}/text/annotated.png" alt="Text detection annotation"></div><figcaption><span>OCR text coordinates</span><a href="/runs/{{ item.run_id }}/text/detections.csv">CSV ↓</a></figcaption></figure>{% if item.result.date.crop_box %}<figure><div class="image-frame"><img src="/runs/{{ item.run_id }}/date/crop.png" alt="Handwritten date crop"></div><figcaption><span>Date crop for TrOCR</span><a href="/runs/{{ item.run_id }}/date/result.csv">CSV ↓</a></figcaption></figure>{% endif %}</div>
+        <div class="cheque-footer"><span>Preprocessing: scale {{ item.result.preprocessing.scale }} · deskew {{ item.result.preprocessing.deskew_degrees }}° · {{ item.result.text.count }} text regions</span><a href="/runs/{{ item.run_id }}/summary.csv">Download summary CSV ↓</a></div>
+      </article>
+    {% endfor %}
+    </section>
+  </main>
+</body>
+</html>
