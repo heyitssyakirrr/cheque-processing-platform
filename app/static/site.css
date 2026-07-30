@@ -90,8 +90,8 @@ body {
   grid-template-columns: minmax(280px, 0.82fr) minmax(520px, 1.18fr);
   gap: clamp(40px, 7vw, 130px);
   min-height: calc(100vh - 76px);
-  padding: clamp(46px, 8vw, 120px) clamp(24px, 9vw, 170px);
-  align-items: center;
+  padding: clamp(26px, 4vh, 44px) clamp(24px, 9vw, 170px) clamp(34px, 5vh, 60px);
+  align-items: start;
   background: radial-gradient(circle at 16% 22%, #fff 0, transparent 34%),
     var(--canvas);
 }
@@ -344,6 +344,11 @@ figcaption {
   place-items: center;
 }
 
+/* The class sets display:grid, so explicitly preserve the HTML hidden state. */
+.processing-overlay[hidden] {
+  display: none;
+}
+
 .processing-card {
   width: min(420px, calc(100% - 40px));
   padding: 38px;
@@ -583,7 +588,7 @@ figcaption a {
 
 @media (max-width: 900px) {
   .upload-page {
-    padding: 55px 30px;
+    padding: 36px 30px 48px;
     grid-template-columns: 1fr;
     gap: 42px;
   }
