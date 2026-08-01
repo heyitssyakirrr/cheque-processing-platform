@@ -2,7 +2,7 @@
 
 import csv
 import json
-import uuid
+import re
 from pathlib import Path
 from typing import Any
 
@@ -10,15 +10,19 @@ import cv2
 
 from app.services.date_extraction import extract as extract_date
 from app.services.field_extraction import extract as extract_fields
-from app.services.preprocessing import PreprocessOptions, preprocess
+from app.services.preprocessing import PreprocessOptions, prepare_signature_image, preprocess
 from app.services.signature_detection import detect as detect_signatures
 from app.services.text_detection import detect as detect_text
 from app.settings import settings
 
 
-def _create_run_directory() -> tuple[str, Path]:
-    """Create a unique, self-contained output directory for one cheque."""
-    run_id = uuid.uuid4().hex[:12]
+def _safe_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", Path(value).stem.lower()).strip("-")[:48] or "cheque"
+
+
+def _create_run_directory(batch_id: str, sequence: int, source_name: str) -> tuple[str, Path]:
+    """Keep every run self-contained while making files sort by batch/order."""
+    run_id = f"{batch_id}-{sequence:03d}-{_safe_name(source_name)}"
     run_dir = settings.runs_dir / run_id
 
     for name in ("original", "preprocessed", "signature", "text", "date"):
@@ -51,9 +55,12 @@ def process(
     options: PreprocessOptions,
     yolo_threshold: float,
     date_width: int,
+    batch_id: str,
+    sequence: int,
+    source_name: str,
 ) -> tuple[str, dict[str, Any]]:
     """Process one uploaded cheque and persist all intermediate artifacts."""
-    run_id, run_dir = _create_run_directory()
+    run_id, run_dir = _create_run_directory(batch_id, sequence, source_name)
 
     original = cv2.imread(str(source))
     if original is None:
@@ -64,8 +71,11 @@ def process(
     preprocessed, preprocessing_metadata = preprocess(original, options)
     cv2.imwrite(str(run_dir / "preprocessed" / "cheque.png"), preprocessed)
 
+    signature_image, signature_scale = prepare_signature_image(original, options)
+    preprocessing_metadata["signature_scale"] = round(signature_scale, 4)
+
     signature_detections = detect_signatures(
-        preprocessed,
+        signature_image,
         run_dir / "signature",
         decision_threshold=yolo_threshold,
     )
@@ -80,6 +90,9 @@ def process(
 
     result: dict[str, Any] = {
         "run_id": run_id,
+        "batch_id": batch_id,
+        "sequence": sequence,
+        "source_filename": source_name,
         "preprocessing": preprocessing_metadata,
         "signature": {
             "exists": any(item["accepted"] for item in signature_detections),

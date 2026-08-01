@@ -1,6 +1,9 @@
 """FastAPI web application for batch cheque processing."""
 
+import csv
+import re
 import uuid
+from datetime import datetime
 import uvicorn
 from pathlib import Path
 
@@ -24,7 +27,7 @@ ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/tiff"}
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request) -> HTMLResponse:
-    defaults = {"max_edge": 2200, "contrast": 1.15, "yolo": 0.50, "date_width": 450}
+    defaults = {"max_edge": 3000, "contrast": 1.15, "yolo": 0.30, "date_width": 450}
     return templates.TemplateResponse(request, "index.html", {"defaults": defaults})
 
 
@@ -100,22 +103,39 @@ async def run(
         deskew=deskew,
     )
     completed: list[dict] = []
+    batch_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
 
-    for upload in cheques:
+    for sequence, upload in enumerate(cheques, start=1):
         temporary_path = await _save_valid_upload(upload)
         try:
-            run_id, result = process(temporary_path, options, yolo_threshold, date_width)
+            source_name = upload.filename or f"cheque-{sequence}"
+            run_id, result = process(
+                temporary_path, options, yolo_threshold, date_width,
+                batch_id, sequence, source_name,
+            )
             completed.append({"filename": upload.filename or "cheque", "run_id": run_id, "result": result})
         finally:
             temporary_path.unlink(missing_ok=True)
 
-    return templates.TemplateResponse(request, "results.html", {"results": completed})
+    batch_dir = settings.batches_dir / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    with (batch_dir / "summary.csv").open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=["sequence", "filename", "run_id", "signature_detected", "date", "date_status"])
+        writer.writeheader()
+        for item in completed:
+            result = item["result"]
+            writer.writerow({
+                "sequence": result["sequence"], "filename": item["filename"], "run_id": item["run_id"],
+                "signature_detected": result["signature"]["exists"], "date": result["date"]["date"],
+                "date_status": result["date"]["status"],
+            })
+    return templates.TemplateResponse(request, "results.html", {"results": completed, "batch_id": batch_id})
 
 
 @app.get("/runs/{run_id}/{artifact:path}")
 def artifact(run_id: str, artifact: str) -> FileResponse:
     """Serve only files belonging to the requested generated run folder."""
-    if len(run_id) != 12 or any(char not in "0123456789abcdef" for char in run_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12,120}", run_id):
         raise HTTPException(404)
 
     run_dir = (settings.runs_dir / run_id).resolve()
@@ -124,6 +144,16 @@ def artifact(run_id: str, artifact: str) -> FileResponse:
         raise HTTPException(404)
 
     return FileResponse(target)
+
+
+@app.get("/batches/{batch_id}/summary.csv")
+def batch_summary(batch_id: str) -> FileResponse:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12,120}", batch_id):
+        raise HTTPException(404)
+    target = (settings.batches_dir / batch_id / "summary.csv").resolve()
+    if not target.is_file():
+        raise HTTPException(404)
+    return FileResponse(target, filename=f"{batch_id}-summary.csv")
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="127.0.0.1", port=5000, reload=True)

@@ -582,6 +582,71 @@ figcaption a {
   margin-left: auto;
 }
 
+.evidence-panel {
+  padding: 0 25px 20px;
+  border-top: 1px solid var(--line);
+}
+
+.evidence-panel summary {
+  display: flex;
+  padding: 16px 0;
+  justify-content: space-between;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.evidence-panel summary small,
+.evidence-grid small,
+.ocr-lines > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.evidence-grid div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 13px;
+  background: #fafafa;
+  border: 1px solid #edf0f2;
+  border-radius: 8px;
+}
+
+.evidence-grid strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.ocr-lines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 15px;
+}
+
+.ocr-lines > small {
+  width: 100%;
+}
+
+.ocr-lines span {
+  padding: 5px 7px;
+  background: #f3f4f6;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.ocr-lines em {
+  color: var(--muted);
+  font-style: normal;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Responsive layout                                                          */
 /* -------------------------------------------------------------------------- */
@@ -624,7 +689,8 @@ figcaption a {
   .settings-grid,
   .summary-strip,
   .metric-grid,
-  .artifact-grid {
+  .artifact-grid,
+  .evidence-grid {
     grid-template-columns: 1fr;
   }
 

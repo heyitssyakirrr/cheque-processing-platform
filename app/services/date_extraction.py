@@ -1,6 +1,8 @@
-"""Locate a date label with OCR and read the adjacent handwriting with TrOCR."""
+"""Find a printed date label with PaddleOCR, then read its right-side crop with TrOCR."""
 
+import calendar
 import csv
+from difflib import SequenceMatcher
 import re
 import threading
 from pathlib import Path
@@ -13,118 +15,176 @@ from PIL import Image
 from app.settings import settings
 
 
-DATE_PATTERN = re.compile(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}")
+DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})(?!\d)")
 _processor: Any | None = None
 _model: Any | None = None
 _model_lock = threading.Lock()
 
 
 def _trocr() -> tuple[Any, Any]:
-    """Load the handwriting recognition model once per application process."""
     global _processor, _model
-
     if _model is None:
         with _model_lock:
             if _model is None:
                 from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 
                 _processor = TrOCRProcessor.from_pretrained(
-                    "microsoft/trocr-base-handwritten"
+                    "microsoft/trocr-base-handwritten", use_fast=True
                 )
                 _model = VisionEncoderDecoderModel.from_pretrained(
                     "microsoft/trocr-base-handwritten"
                 )
+                _model.eval()
     return _processor, _model
 
 
-def _normalize(value: str) -> str:
-    """Normalize an OCR string before matching label aliases."""
+def _normalise(value: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", value.upper())
 
 
-def _find_anchor(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Return the highest-confidence text line matching a date-label alias."""
-    candidates = []
+def _bounds(box: list[list[float]]) -> tuple[float, float, float, float]:
+    xs = [point[0] for point in box]
+    ys = [point[1] for point in box]
+    return min(xs), min(ys), max(xs), max(ys)
 
+
+def _find_anchor(lines: list[dict[str, Any]], image_shape: tuple[int, ...]) -> dict[str, Any] | None:
+    """Find TARIKH/DATE despite predictable OCR spelling errors.
+
+    No handwritten digits are considered here.  PaddleOCR's only role in
+    this service is returning a trustworthy printed-label bounding box.
+    """
+    aliases = [_normalise(alias) for alias in settings.date_label_aliases]
+    height, width = image_shape[:2]
+    best: tuple[float, dict[str, Any]] | None = None
     for line in lines:
-        text = _normalize(line["text"])
-        matches_alias = any(
-            _normalize(alias) in text or text in _normalize(alias)
-            for alias in settings.date_label_aliases
-        )
-        if matches_alias:
-            candidates.append(line)
+        text = _normalise(str(line["text"]))
+        if len(text) < 2:
+            continue
+        direct = [alias for alias in aliases if alias in text or text in alias]
+        similarity = max(SequenceMatcher(None, text, alias).ratio() for alias in aliases if len(alias) >= 3)
+        x0, y0, x1, y1 = _bounds(line["box"])
+        # WN is a known but weak TARIKH/DATE corruption; only trust it in the
+        # normal upper-right label area to avoid anchoring on unrelated text.
+        weak_wn = text == "WN" and (x0 + x1) / 2 >= width * 0.55 and (y0 + y1) / 2 <= height * 0.50
+        if not direct and similarity < 0.66 and not weak_wn:
+            continue
+        score = float(line["confidence"]) + similarity + (2.0 if text in direct else 0.0)
+        if best is None or score > best[0]:
+            best = (score, line)
+    return best[1] if best else None
 
-    return max(candidates, key=lambda line: line["confidence"]) if candidates else None
+
+def _right_of_anchor(anchor: dict[str, Any], image_shape: tuple[int, ...]) -> tuple[int, int, int, int]:
+    """Crop the complete date-cell row to the right of the printed label."""
+    height, width = image_shape[:2]
+    _x0, y0, x1, y1 = _bounds(anchor["box"])
+    label_height = max(1.0, y1 - y0)
+    vertical_pad = max(int(label_height * 2.4), int(height * 0.05))
+    # Do not use individual digit boxes or a fixed width: both can omit the
+    # final handwritten digit.  The right margin is stable on this template.
+    return (
+        max(0, int(x1)),
+        max(0, int(y0 - vertical_pad)),
+        max(0, int(width * 0.99)),
+        min(height, int(y1 + vertical_pad)),
+    )
+
+
+def _template_date_zone(image_shape: tuple[int, ...]) -> tuple[int, int, int, int]:
+    """Fallback for a Public Bank image whose printed label is unreadable."""
+    height, width = image_shape[:2]
+    return int(width * 0.60), int(height * 0.10), int(width * 0.99), int(height * 0.38)
+
+
+def _date_from_text(value: str) -> str:
+    match = DATE_PATTERN.search(re.sub(r"\s+", "", value))
+    return match.group(1) if match else ""
+
+
+def _calendar_valid(value: str) -> bool:
+    if not DATE_PATTERN.fullmatch(value):
+        return False
+    day_text, month_text, year_text = re.split(r"[/-]", value)
+    day, month, year = int(day_text), int(month_text), int(year_text)
+    if not 1 <= month <= 12:
+        return False
+    if len(year_text) == 2:
+        return 1 <= day <= 31
+    return year >= 1 and 1 <= day <= calendar.monthrange(year, month)[1]
+
+
+def _read_trocr(crop: np.ndarray) -> tuple[str, float]:
+    import torch
+
+    processor, model = _trocr()
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    pixels = processor(images=Image.fromarray(rgb), return_tensors="pt").pixel_values
+    with torch.inference_mode():
+        output = model.generate(
+            pixels, max_new_tokens=16, num_beams=4,
+            output_scores=True, return_dict_in_generate=True,
+        )
+    text = processor.batch_decode(output.sequences, skip_special_tokens=True)[0].strip()
+    likelihood = float(np.exp(output.sequences_scores[0].item())) if output.sequences_scores is not None else 0.0
+    return text, likelihood
 
 
 def _write_csv(output_dir: Path, result: dict[str, Any]) -> None:
-    with (output_dir / "result.csv").open(
-        "w", newline="", encoding="utf-8"
-    ) as file:
+    with (output_dir / "result.csv").open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=result.keys())
         writer.writeheader()
-        writer.writerow(result)
+        writer.writerow({key: str(value) if isinstance(value, list) else value for key, value in result.items()})
 
 
 def extract(
     image: np.ndarray,
     lines: list[dict[str, Any]],
     output_dir: Path,
-    width: int = 450,
-    height_pad: int = 25,
+    width: int = 450,  # retained for API compatibility; crop uses page margin.
 ) -> dict[str, Any]:
-    """Crop right of DATE/TARIKH and use TrOCR to read the handwritten date."""
+    """PaddleOCR label -> right-side crop -> TrOCR handwritten date."""
+    del width
     output_dir.mkdir(parents=True, exist_ok=True)
-    result: dict[str, Any] = {
-        "status": "anchor_not_found",
-        "date": "",
-        "raw_text": "",
-        "anchor_text": "",
-        "confidence": 0.0,
-        "crop_box": [],
-    }
+    anchor = _find_anchor(lines, image.shape)
+    if anchor is not None:
+        crop_box = _right_of_anchor(anchor, image.shape)
+        anchor_text = str(anchor["text"])
+        anchor_mode = "OCR/fuzzy label anchor"
+    else:
+        crop_box = _template_date_zone(image.shape)
+        anchor_text = ""
+        anchor_mode = "Public Bank upper-right fallback"
 
-    anchor = _find_anchor(lines)
-    if anchor is None:
-        _write_csv(output_dir, result)
-        return result
-
-    xs = [point[0] for point in anchor["box"]]
-    ys = [point[1] for point in anchor["box"]]
-    image_height, image_width = image.shape[:2]
-
-    x0 = max(0, int(max(xs)))
-    y0 = max(0, int(min(ys) - height_pad))
-    x1 = min(image_width, x0 + width)
-    y1 = min(image_height, int(max(ys) + height_pad))
+    x0, y0, x1, y1 = crop_box
     crop = image[y0:y1, x0:x1]
-
+    result: dict[str, Any] = {
+        "status": "needs_review",
+        "date": "",
+        "date_source": "",
+        "validation": f"crop source: {anchor_mode}",
+        "raw_text": "",
+        "ocr_candidate_text": "",  # intentionally unused: OCR never reads the handwritten date.
+        "anchor_text": anchor_text,
+        "confidence": 0.0,
+        "crop_box": [x0, y0, x1, y1],
+    }
     if crop.size == 0:
         result["status"] = "empty_crop"
-        result["anchor_text"] = anchor["text"]
         _write_csv(output_dir, result)
         return result
 
     crop = cv2.resize(crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
     cv2.imwrite(str(output_dir / "crop.png"), crop)
-
-    processor, model = _trocr()
-    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-    pixel_values = processor(
-        images=Image.fromarray(crop_rgb),
-        return_tensors="pt",
-    ).pixel_values
-    generated_ids = model.generate(pixel_values, max_new_tokens=16, num_beams=4)
-    raw_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
-    match = DATE_PATTERN.search(raw_text.replace(" ", ""))
-
-    result.update(
-        status="ok" if match else "needs_review",
-        date=match.group(0) if match else "",
-        raw_text=raw_text,
-        anchor_text=anchor["text"],
-        crop_box=[x0, y0, x1, y1],
-    )
+    raw_text, confidence = _read_trocr(crop)
+    date = _date_from_text(raw_text)
+    if _calendar_valid(date):
+        result.update(
+            status="date_candidate", date=date, date_source="trocr",
+            validation=f"format and calendar valid; crop source: {anchor_mode}",
+        )
+    else:
+        result["validation"] = f"TrOCR output is not a valid date; crop source: {anchor_mode}"
+    result.update(raw_text=raw_text, confidence=round(confidence, 6))
     _write_csv(output_dir, result)
     return result
