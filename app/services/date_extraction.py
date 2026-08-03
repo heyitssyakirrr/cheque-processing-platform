@@ -53,18 +53,41 @@ def _find_anchor(lines: list[dict[str, Any]], image_shape: tuple[int, ...]) -> d
 
 
 def _right_of_anchor(anchor: dict[str, Any], image_shape: tuple[int, ...]) -> tuple[int, int, int, int]:
-    """Crop the complete date-cell row to the right of the printed label."""
+    """Crop tightly around the handwritten date cell, right of the printed label.
+
+    Sized in multiples of the label's own OCR'd text height, not fixed
+    fractions of the full image. A fixed fraction of image width/height
+    doesn't scale with the date field: a higher-res scan has proportionally
+    more blank margin and unrelated print around it, so `width * 0.99`
+    always reached past the digits into noisy margin, and a symmetric
+    vertical pad around the label pulled in unrelated text sitting well
+    above it (account-type line, stamp box). `label_height` scales with
+    the print itself, so multiples of it stay correct regardless of scan
+    resolution or page margin.
+
+    The multipliers live in settings and were calibrated against measured
+    Public Bank cheque geometry: the handwritten digit row starts ~0.2
+    label-heights below the label's bottom edge and is about as tall as
+    the label text; the printed "D D M M Y Y" guide row follows
+    immediately after. The defaults add a safety margin on top of that
+    single measured sample for handwriting-size variance — if a broader
+    cheque sample shows the crop is still too tight or too loose, tune the
+    `date_field_*` settings rather than editing this function.
+    """
     height, width = image_shape[:2]
-    _x0, y0, x1, y1 = _bounds(anchor["box"])
-    label_height = max(1.0, y1 - y0)
-    vertical_pad = max(int(label_height * 2.4), int(height * 0.05))
-    # Do not use individual digit boxes or a fixed width: both can omit the
-    # final handwritten digit. The right margin is stable on this template.
+    _label_x0, label_y0, label_x1, label_y1 = _bounds(anchor["box"])
+    label_height = max(1.0, label_y1 - label_y0)
+
+    crop_x0 = label_x1
+    crop_x1 = crop_x0 + label_height * settings.date_field_width_label_heights
+    crop_y0 = label_y1 - label_height * settings.date_field_up_pad_label_heights
+    crop_y1 = label_y1 + label_height * settings.date_field_down_pad_label_heights
+
     return (
-        max(0, int(x1)),
-        max(0, int(y0 - vertical_pad)),
-        max(0, int(width * 0.99)),
-        min(height, int(y1 + vertical_pad)),
+        max(0, int(crop_x0)),
+        max(0, int(crop_y0)),
+        min(width, int(crop_x1)),
+        min(height, int(crop_y1)),
     )
 
 

@@ -20,6 +20,14 @@ class Settings(BaseSettings):
         "TARIKH", "DATE", "DATF", "D4TE", "TARlKH", "TARlK",
         "TARKH", "TARK", "DAE", "BDATE", "WN",
     )
+    # Date-cell crop geometry, expressed as multiples of the OCR'd label's
+    # own text height (see _right_of_anchor in date_extraction.py). Keeping
+    # these here -- rather than hardcoded in the crop function -- means the
+    # crop can be retuned for a different cheque template or a wider
+    # calibration sample without touching code.
+    date_field_width_label_heights: float = 14.0
+    date_field_up_pad_label_heights: float = 0.6
+    date_field_down_pad_label_heights: float = 2.8
     digit_model_backend: str = "transformers" #transformers or torch_pickle
     digit_model_path: str = "models/farleyknight-vit-mnist" #models/farleyknight-vit-mnist or models/developerPratik-mnist-cnn/best_model.pth
     digit_count: int = 6
