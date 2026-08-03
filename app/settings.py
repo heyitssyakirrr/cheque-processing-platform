@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     # Horizontal width, in multiples of the document's typical single-line
     # text height (a stable, format-invariant reference -- see
     # `_typical_line_height`), not the anchor's own box height.
-    date_field_width_typical_heights: float = 16.0
+    date_field_width_typical_heights: float = 17.0
     # Hard ceiling on the crop, independent of anything OCR reports, as a
     # last line of defense against any future anchor-measurement error.
     # Expressed as a fraction of the (already format-normalised) page size.
@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # in the crop is lighter gray. Otsu picks its threshold dynamically per
     # image and can be pulled toward including that shading as "foreground"
     # -- a fixed cutoff isn't swayed by what else happens to be in the crop.
-    digit_ink_threshold: int = 180
+    digit_ink_threshold: int = 140
     
     @property
     def runs_dir(self) -> Path: return self.root / "data" / "runs"
