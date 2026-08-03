@@ -19,6 +19,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from app.services.digit_model import DigitCNN
 from app.settings import settings
 
 _model: Any | None = None
@@ -42,11 +43,9 @@ def _load() -> None:
             _model = AutoModelForImageClassification.from_pretrained(settings.digit_model_path)
             _model.eval()
         elif settings.digit_model_backend == "torch_pickle":
-            # weights_only=False: this checkpoint is a full pickled nn.Module,
-            # not just a state_dict. Only safe because the file has already
-            # been downloaded and vetted locally -- never point this at a
-            # live/untrusted URL.
-            _model = torch.load(settings.digit_model_path, map_location="cpu", weights_only=False)
+            checkpoint = torch.load(settings.digit_model_path, map_location="cpu", weights_only=False)
+            _model = DigitCNN(dropout_rate=checkpoint.get("args", {}).get("dropout_rate", 0.3))
+            _model.load_state_dict(checkpoint["model_state_dict"])
             _model.eval()
         else:
             raise ValueError(f"Unknown digit_model_backend: {settings.digit_model_backend}")
