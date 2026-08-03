@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     )
     digit_model_backend: str = "torch_pickle" #transformers or torch_pickle
     digit_model_path: str = "models/developerPratik-mnist-cnn/best_model.pth" #models/farleyknight-vit-mnist or models/developerPratik-mnist-cnn/best_model.pth
-
+    digit_count: int = 6
     @property
     def runs_dir(self) -> Path: return self.root / "data" / "runs"
     @property
