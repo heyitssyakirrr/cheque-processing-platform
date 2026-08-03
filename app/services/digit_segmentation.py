@@ -1,24 +1,14 @@
 """Slice a printed date-row crop into individual digit images.
 
 Takes the crop already produced by the PaddleOCR-anchor + right-of-anchor
-logic in date_extraction.py. That crop's box is only an estimate — it is
-deliberately generous so it never truncates the last handwritten digit,
-which means it can include blank margin, the printed "D D M M Y Y" guide
-band, or even stray text above the date (account labels, stamp boxes).
-
-This module does the precision work in two stages, both driven by ink
-content rather than fixed pixel ratios, so results are stable no matter
-the source image's resolution, crop aspect ratio, or margin:
-
-1. Isolate the handwritten digit row itself (discard guide letters/noise
-   above and below), then tightly crop to the actual ink bounding box
-   left-to-right (discard blank margin).
-2. Cluster that ink into exactly `digit_count` characters using connected
-   components: broken strokes of one digit get merged, digits that touch
-   or bleed into each other get split at their thinnest ink point. This
-   replaces blind equal-width division, which is what let touching digits
-   (e.g. "26") land in one lane while a trailing blank margin produced an
-   empty lane.
+logic in date_extraction.py, trims the printed guide-letter band ("D D M M
+Y Y"), then segments the remainder into `digit_count` digits by their real
+ink gaps (not equal-width division -- a narrow '1' and a wide '8' don't
+occupy the same ink-width, so equal slices misalign whenever digit widths
+vary this much), splitting or merging specific groups only where digits
+touch or noise creates a spurious extra blob. Normalizes each digit into a
+canonical square grayscale image ready for a classifier's own final
+resize/normalize step.
 """
 
 from pathlib import Path
@@ -26,157 +16,158 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-
-def _binarize(gray: np.ndarray) -> np.ndarray:
-    """Otsu-threshold once; ink -> 255, background -> 0."""
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    return binary
+from app.settings import settings
 
 
-def _row_bands(binary: np.ndarray, min_gap_ratio: float = 0.02) -> list[tuple[int, int]]:
-    """Return (top, bottom) y-ranges of horizontal ink bands, separated by
-    near-empty rows. A cheque date crop typically contains several such
-    bands: stray text above, the handwritten digits, and the small printed
-    guide letters below — this just finds the candidates."""
-    height, width = binary.shape
-    row_ink = binary.sum(axis=1) // 255
-    threshold = max(1, int(width * 0.01))
-    ink_rows = row_ink > threshold
+def _trim_guide_band(gray: np.ndarray, guide_band_ratio: float) -> np.ndarray:
+    """Cut off the bottom band containing the faint 'D D M M Y Y' guide letters."""
+    height = gray.shape[0]
+    cutoff = int(height * (1 - guide_band_ratio))
+    return gray[:cutoff, :]
 
-    bands: list[list[int]] = []
+
+def _column_ink_profile(gray: np.ndarray) -> np.ndarray:
+    """Column-wise count of dark (ink) pixels, used to find gaps between digits.
+
+    Uses a fixed threshold rather than Otsu -- see `digit_ink_threshold` in
+    settings for why: Otsu can be pulled toward including non-ink gray
+    shading as "foreground" depending on what else is in the crop.
+    """
+    _, binary = cv2.threshold(gray, settings.digit_ink_threshold, 255, cv2.THRESH_BINARY_INV)
+    return binary.sum(axis=0) // 255
+
+
+def _trim_to_ink_extent(gray: np.ndarray, buffer_ratio: float = 0.12) -> np.ndarray:
+    """Trim leading/trailing blank columns down to where the ink actually is.
+
+    This is what lets the outer crop (from date_extraction.py) stay
+    generously wide without needing to be pixel-precise: any blank margin
+    added as a safety buffer against clipping the last digit would otherwise
+    skew the equal-width lane division below, since that division assumes
+    the crop's full width is occupied by `digit_count` digits. Trimming to
+    the real ink extent first removes that assumption entirely.
+    """
+    profile = _column_ink_profile(gray)
+    ink_columns = np.nonzero(profile > 0)[0]
+    if len(ink_columns) == 0:
+        return gray
+    left, right = int(ink_columns[0]), int(ink_columns[-1])
+    buffer_px = int((right - left) * buffer_ratio)
+    left = max(0, left - buffer_px)
+    right = min(gray.shape[1], right + buffer_px + 1)
+    return gray[:, left:right]
+
+
+def _find_ink_groups(profile: np.ndarray, min_gap_width: int = 3) -> list[tuple[int, int]]:
+    """Find contiguous ink groups (candidate digits), separated by real gaps.
+
+    Unlike equal-width division, this uses the actual physical gaps between
+    digits when they exist -- the normal case, since these are separate
+    printed boxes -- instead of assuming every digit occupies the same
+    ink-width. A '1' is inherently far narrower in ink than an '8' or '5',
+    so equal division of total ink width misaligns whenever digit widths
+    differ this much, which is exactly what happened on this cheque.
+    """
+    is_ink = profile > 0
+    groups: list[tuple[int, int]] = []
     start = None
-    for y, has_ink in enumerate(ink_rows):
-        if has_ink and start is None:
-            start = y
-        elif not has_ink and start is not None:
-            bands.append([start, y])
-            start = None
+    gap_run = 0
+    for i, ink in enumerate(is_ink):
+        if ink:
+            if start is None:
+                start = i
+            gap_run = 0
+        elif start is not None:
+            gap_run += 1
+            if gap_run >= min_gap_width:
+                groups.append((start, i - gap_run))
+                start = None
     if start is not None:
-        bands.append([start, height])
-
-    # Merge bands separated by only a tiny gap (a pen lift mid-stroke
-    # shouldn't count as a new band).
-    min_gap = max(1, int(height * min_gap_ratio))
-    merged: list[list[int]] = []
-    for band in bands:
-        if merged and band[0] - merged[-1][1] <= min_gap:
-            merged[-1][1] = band[1]
-        else:
-            merged.append(band)
-    return [(t, b) for t, b in merged]
+        groups.append((start, len(is_ink) - 1))
+    return groups
 
 
-def _select_digit_band(binary: np.ndarray, bands: list[tuple[int, int]]) -> tuple[int, int]:
-    """Pick the row band that is the handwritten digits.
+def _split_widest_group(groups: list[tuple[int, int]], target_count: int) -> list[tuple[int, int]]:
+    """Split the widest group(s) until there are `target_count` groups.
 
-    Scored by total ink area, not just height: six solid handwritten
-    characters carry far more ink than a thin row of small printed guide
-    letters or a stray line of unrelated printed text, even if that text
-    happens to be similarly tall.
+    Handles touching/connected digits (e.g. the merged '26'-style stroke
+    seen earlier) that produce fewer ink groups than expected -- only the
+    specific group(s) actually stuck together get subdivided, not the
+    whole row.
     """
-    if not bands:
-        return 0, binary.shape[0]
-
-    def ink_area(band: tuple[int, int]) -> int:
-        top, bottom = band
-        return int(binary[top:bottom, :].sum() // 255)
-
-    return max(bands, key=ink_area)
-
-
-def _best_valley(binary_row: np.ndarray, x0: int, x1: int) -> int:
-    """Find the column with the least ink strictly inside (x0, x1),
-    avoiding the extreme edges so a split never produces a near-empty
-    sliver off one side of a touching-digit pair."""
-    width = x1 - x0
-    margin = max(1, int(width * 0.2))
-    if width <= 2 * margin:
-        return x0 + width // 2
-    profile = binary_row[:, x0:x1].sum(axis=0)
-    search = profile[margin : width - margin]
-    return x0 + margin + int(np.argmin(search))
-
-
-def _equal_split(width: int, digit_count: int) -> list[tuple[int, int]]:
-    """Last-resort fallback when no ink survives filtering at all."""
-    lane = width / digit_count
-    return [(int(i * lane), int((i + 1) * lane)) for i in range(digit_count)]
-
-
-def _cluster_into_digits(
-    binary_row: np.ndarray, digit_count: int, merge_gap_ratio: float = 0.12
-) -> list[tuple[int, int]]:
-    """Group ink into exactly `digit_count` left-to-right x-ranges.
-
-    1. Connected components -> raw ink blobs.
-    2. Merge blobs separated by only a small gap (a detached dot, a
-       disconnected loop — pieces of the same character).
-    3. If still more blobs than `digit_count`, repeatedly merge the
-       closest remaining pair (handles multi-stroke digits).
-    4. If fewer blobs than `digit_count`, repeatedly split the widest
-       blob at its deepest ink valley (handles digits that touch or bleed
-       into their neighbor, e.g. a connected "26").
-    """
-    num_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(binary_row, connectivity=8)
-    band_height = binary_row.shape[0]
-    min_area = max(4, int(binary_row.size * 0.0008))  # scale-relative noise floor
-    min_height = max(2, int(band_height * 0.3))  # a real digit stroke spans a large
-    # fraction of the row's height; a stray mark or print speck usually doesn't,
-    # even if it happens to cover enough area to pass min_area alone.
-    boxes = [
-        (stats[i][0], stats[i][0] + stats[i][2])
-        for i in range(1, num_labels)  # skip background label 0
-        if stats[i][4] >= min_area and stats[i][3] >= min_height
-    ]
-    if not boxes:
-        return _equal_split(binary_row.shape[1], digit_count)
-    boxes.sort()
-
-    avg_width = binary_row.shape[1] / digit_count
-    merge_gap = max(1, int(avg_width * merge_gap_ratio))
-
-    merged = [list(boxes[0])]
-    for x0, x1 in boxes[1:]:
-        if x0 - merged[-1][1] <= merge_gap:
-            merged[-1][1] = max(merged[-1][1], x1)
-        else:
-            merged.append([x0, x1])
-
-    while len(merged) > digit_count:
-        gaps = [merged[i + 1][0] - merged[i][1] for i in range(len(merged) - 1)]
-        idx = int(np.argmin(gaps))
-        merged[idx][1] = merged[idx + 1][1]
-        del merged[idx + 1]
-
-    while len(merged) < digit_count:
-        widths = [x1 - x0 for x0, x1 in merged]
+    groups = list(groups)
+    while len(groups) < target_count:
+        widths = [end - start for start, end in groups]
         idx = int(np.argmax(widths))
-        x0, x1 = merged[idx]
-        split_at = _best_valley(binary_row, x0, x1)
-        merged[idx : idx + 1] = [[x0, split_at], [split_at, x1]]
+        start, end = groups.pop(idx)
+        mid = (start + end) // 2
+        groups.insert(idx, (start, mid))
+        groups.insert(idx + 1, (mid + 1, end))
+    return sorted(groups)
 
-    return [(x0, x1) for x0, x1 in merged]
+
+def _merge_closest_groups(groups: list[tuple[int, int]], target_count: int) -> list[tuple[int, int]]:
+    """Merge the closest pair of groups until there are `target_count` groups.
+
+    Handles noise producing spurious extra ink groups (stray marks, box
+    line bleed) that would otherwise be mistaken for a real digit.
+    """
+    groups = sorted(groups)
+    while len(groups) > target_count:
+        gaps = [groups[i + 1][0] - groups[i][1] for i in range(len(groups) - 1)]
+        idx = int(np.argmin(gaps))
+        merged = (groups[idx][0], groups[idx + 1][1])
+        groups = groups[:idx] + [merged] + groups[idx + 2 :]
+    return groups
 
 
-def _normalize_digit(binary_slice: np.ndarray, canvas_size: int = 128) -> np.ndarray:
-    """Center an already-binary (white-ink-on-black) slice by ink centroid,
-    scale it to fit, and pad it to a square canvas.
+def _digit_boundaries(profile: np.ndarray, digit_count: int) -> list[int]:
+    """Return `digit_count + 1` dividers, one bounding box per real ink group.
+
+    Prefers real detected gaps over any equal-width assumption; only
+    splits or merges specific groups when the raw gap count doesn't
+    already match `digit_count`, so well-separated digits of very
+    different widths (a narrow '1' next to a wide '8') are still bounded
+    correctly instead of forced into equal slices.
+    """
+    groups = _find_ink_groups(profile)
+    if not groups:
+        # No ink detected at all -- fall back to naive equal division so
+        # slicing still returns `digit_count` (blank) images rather than
+        # erroring out.
+        width = len(profile)
+        step = width / digit_count
+        return [int(i * step) for i in range(digit_count + 1)]
+
+    if len(groups) < digit_count:
+        groups = _split_widest_group(groups, digit_count)
+    elif len(groups) > digit_count:
+        groups = _merge_closest_groups(groups, digit_count)
+
+    dividers = [max(0, groups[0][0] - 2)]
+    for i in range(len(groups) - 1):
+        dividers.append((groups[i][1] + groups[i + 1][0]) // 2)
+    dividers.append(min(len(profile), groups[-1][1] + 3))
+    return dividers
+
+
+def _normalize_digit(gray_slice: np.ndarray, canvas_size: int = 128) -> np.ndarray:
+    """Binarize, invert to white-ink-on-black, center by ink centroid, pad to square.
 
     Bridges the domain gap toward MNIST-style training data without any
     fine-tuning: real ink is rarely centered or square the way a lane crop
     is, so centering on the ink itself (not the crop's bounding box)
-    matters more than the exact threshold method. Takes a binary mask
-    directly (not grayscale) since the caller already binarized once,
-    upstream, to do band/cluster detection — re-thresholding an already
-    binary 0/255 image here would invert ink and background.
+    matters more than the exact threshold method.
     """
-    ys, xs = np.nonzero(binary_slice)
+    _, binary = cv2.threshold(gray_slice, settings.digit_ink_threshold, 255, cv2.THRESH_BINARY_INV)
+
+    ys, xs = np.nonzero(binary)
     if len(xs) == 0:
         return np.zeros((canvas_size, canvas_size), dtype=np.uint8)
 
     x0, x1 = xs.min(), xs.max()
     y0, y1 = ys.min(), ys.max()
-    ink = binary_slice[y0 : y1 + 1, x0 : x1 + 1]
+    ink = binary[y0 : y1 + 1, x0 : x1 + 1]
 
     height, width = ink.shape
     scale = (canvas_size * 0.8) / max(height, width)
@@ -194,6 +185,7 @@ def slice_digits(
     date_crop: np.ndarray,
     output_dir: Path,
     digit_count: int = 6,
+    guide_band_ratio: float = 0.20,
 ) -> list[np.ndarray]:
     """Split a date-row crop into `digit_count` normalized square digit images.
 
@@ -201,37 +193,18 @@ def slice_digits(
     in-memory canonical images (white ink on black, centered, square).
     """
     gray = cv2.cvtColor(date_crop, cv2.COLOR_BGR2GRAY) if date_crop.ndim == 3 else date_crop
-    binary = _binarize(gray)
+    trimmed = _trim_guide_band(gray, guide_band_ratio)
+    trimmed = _trim_to_ink_extent(trimmed)
+
+    profile = _column_ink_profile(trimmed)
+    dividers = _digit_boundaries(profile, digit_count)
 
     digits_dir = output_dir / "digits"
     digits_dir.mkdir(parents=True, exist_ok=True)
 
-    # Stage 1: isolate the handwritten digit row, then trim to its ink
-    # bounding box so crop margin can never distort lane math downstream.
-    bands = _row_bands(binary)
-    top, bottom = _select_digit_band(binary, bands)
-    row_pad = max(2, int((bottom - top) * 0.08))
-    top, bottom = max(0, top - row_pad), min(binary.shape[0], bottom + row_pad)
-    row = binary[top:bottom, :]
-
-    xs = np.nonzero(row.sum(axis=0))[0]
-    if len(xs) == 0:
-        canonical_slices = [np.zeros((128, 128), dtype=np.uint8) for _ in range(digit_count)]
-        for i, canonical in enumerate(canonical_slices):
-            cv2.imwrite(str(digits_dir / f"digit_{i}.png"), canonical)
-        return canonical_slices
-
-    left, right = int(xs.min()), int(xs.max()) + 1
-    col_pad = max(2, int((right - left) * 0.01))
-    left, right = max(0, left - col_pad), min(row.shape[1], right + col_pad)
-    row = row[:, left:right]
-
-    # Stage 2: cluster ink into exactly `digit_count` characters.
-    clusters = _cluster_into_digits(row, digit_count)
-
     canonical_slices = []
-    for i, (x0, x1) in enumerate(clusters):
-        lane = row[:, x0:x1]
+    for i in range(digit_count):
+        lane = trimmed[:, dividers[i] : dividers[i + 1]]
         canonical = _normalize_digit(lane)
         cv2.imwrite(str(digits_dir / f"digit_{i}.png"), canonical)
         canonical_slices.append(canonical)

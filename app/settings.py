@@ -42,18 +42,30 @@ class Settings(BaseSettings):
     # with both edges measured directly this only needs to cover natural
     # handwriting variance.
     date_field_vertical_safety_pad_ratio: float = 0.15
+    # Extra padding added only below DATE's own bottom edge, on top of the
+    # symmetric safety pad above. Handwritten descenders and closed loops
+    # (a looped '6' or '2') extend further down than a printed line's own
+    # bottom edge predicts -- this is asymmetric on purpose; the top edge
+    # needs no equivalent since TARIKH's top edge has no handwriting above it.
+    date_field_bottom_extra_pad_ratio: float = 0.35
     # Horizontal width, in multiples of the document's typical single-line
     # text height (a stable, format-invariant reference -- see
     # `_typical_line_height`), not the anchor's own box height.
-    date_field_width_typical_heights: float = 14.0
+    date_field_width_typical_heights: float = 16.0
     # Hard ceiling on the crop, independent of anything OCR reports, as a
     # last line of defense against any future anchor-measurement error.
     # Expressed as a fraction of the (already format-normalised) page size.
-    date_field_max_width_fraction: float = 0.42
+    date_field_max_width_fraction: float = 0.55
     date_field_max_height_fraction: float = 0.32
     digit_model_backend: str = "transformers" #transformers or torch_pickle
     digit_model_path: str = "models/farleyknight-vit-mnist" #models/farleyknight-vit-mnist or models/developerPratik-mnist-cnn/best_model.pth
     digit_count: int = 6
+    # Fixed (not Otsu-adaptive) grayscale cutoff below which a pixel counts
+    # as ink. Real ink is near-black; gray shading/gradient bleed elsewhere
+    # in the crop is lighter gray. Otsu picks its threshold dynamically per
+    # image and can be pulled toward including that shading as "foreground"
+    # -- a fixed cutoff isn't swayed by what else happens to be in the crop.
+    digit_ink_threshold: int = 180
     
     @property
     def runs_dir(self) -> Path: return self.root / "data" / "runs"

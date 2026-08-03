@@ -31,13 +31,7 @@ def _score_candidates(
     image_shape: tuple[int, ...],
     allow_weak_wn: bool = False,
 ) -> dict[str, Any] | None:
-    """Find the best-scoring line matching any of `aliases`.
-
-    Same fuzzy/substring scoring as before, just scoped to one alias group
-    at a time so TARIKH and DATE -- two distinct printed lines on the
-    cheque -- can be located independently instead of as one interchangeable
-    "the label" match.
-    """
+    """Find the best-scoring line matching any of `aliases`."""
     normalised_aliases = [_normalise(alias) for alias in aliases]
     height, width = image_shape[:2]
     best: tuple[float, dict[str, Any]] | None = None
@@ -69,16 +63,7 @@ def _find_label_lines(
     lines: list[dict[str, Any]], image_shape: tuple[int, ...]
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Locate TARIKH and DATE as the two independent, stacked printed lines
-    they actually are on a Public Bank cheque (TARIKH above, DATE below) --
-    rather than one fuzzy match standing in for "the label", which is what
-    let the crop math treat a DATE-line match identically to a TARIKH-line
-    match even though they sit at different heights.
-
-    A line that fuzzy-matches both groups at once (PaddleOCR occasionally
-    returns "TARIKH" + "日DATE" as one merged box) will simply be returned
-    as both `tarikh` and `date` -- see `_vertical_bounds_from_labels` for
-    why that case needs no special handling.
-    """
+    they actually are on a Public Bank cheque (TARIKH above, DATE below)."""
     tarikh = _score_candidates(lines, settings.date_label_aliases_tarikh, image_shape)
     date = _score_candidates(
         lines,
@@ -88,12 +73,6 @@ def _find_label_lines(
     )
 
     if tarikh is not None and date is not None and tarikh is not date:
-        # Sanity check: DATE must sit at or below TARIKH, and their
-        # x-ranges must overlap -- they're two lines of the same stacked
-        # label. If not, one of the two fuzzy matches almost certainly
-        # landed on unrelated printed text elsewhere on the cheque, and
-        # trusting it would corrupt the crop worse than estimating its
-        # position from the line we're confident about.
         tx0, ty0, tx1, ty1 = _bounds(tarikh["box"])
         dx0, dy0, dx1, dy1 = _bounds(date["box"])
         x_overlap = min(tx1, dx1) - max(tx0, dx0)
@@ -113,19 +92,6 @@ def _vertical_bounds_from_labels(
     lines: list[dict[str, Any]],
 ) -> tuple[float, float, bool]:
     """Compute the crop's top/bottom Y directly from the label line(s) found.
-
-    TARIKH is always the upper of the two stacked label lines, DATE the
-    lower one. The handwritten date sits beside that stack -- not above or
-    below it -- so the correct vertical span is exactly [TARIKH's own top
-    edge, DATE's own bottom edge]. Using each line's *own* edge (rather
-    than deriving both edges from whichever single line got matched) is
-    what keeps the crop correct no matter which of the two PaddleOCR
-    happens to detect.
-
-    If only one line is found, the other's edge is estimated: the missing
-    line is assumed to be one typical single-line-height away, plus the
-    calibrated gap between the two stacked lines -- i.e. exactly "how far
-    it is" from the line we do have to the one we don't.
 
     Returns (top_y, bottom_y, was_estimated).
     """
@@ -148,20 +114,10 @@ def _vertical_bounds_from_labels(
 
 
 def _typical_line_height(lines: list[dict[str, Any]]) -> float | None:
-    """Robust reference height for one printed line of text on this cheque.
-
-    A cheque carries a dozen-plus short printed lines (BAYAR/PAY, RINGGIT
-    MALAYSIA, ATAU PEMBAYARAN, the account-number line, ...) all set in the
-    same or similar font size. Their *median* height is a stable, per-image,
-    format-invariant yardstick: unlike any single line's own box, it isn't
-    thrown off by one OCR line-detection quirk, because a merge/split
-    artifact on one line is an outlier against a dozen others.
-
-    Used as the sizing reference for the crop's width and safety padding,
-    and to estimate whichever of TARIKH/DATE isn't found directly (see
-    `_vertical_bounds_from_labels`) -- never to relocate the anchor itself,
-    since the anchor line(s) still drive *where* the crop starts.
-    """
+    """Robust reference height for one printed line of text on this cheque
+    -- the median height across all detected lines, used as the sizing
+    reference for crop width and padding (see module docstrings in prior
+    versions for the full rationale)."""
     heights = []
     for line in lines:
         text = str(line["text"])
@@ -184,23 +140,16 @@ def _right_of_labels(
 ) -> tuple[tuple[int, int, int, int], bool]:
     """Crop tightly around the handwritten date cell, right of TARIKH/DATE.
 
-    Vertical bounds come directly from `_vertical_bounds_from_labels` --
-    TARIKH's own top edge to DATE's own bottom edge, estimating whichever
-    line wasn't found. That replaces the old approach of scaling fixed
-    up/down padding off whichever single line got matched, which is what
-    broke whenever the matched line was DATE (the lower line) instead of
-    TARIKH (the upper one): padding measured from DATE's bottom edge
-    systematically overshoots below the digits and undershoots above them.
+    Vertical bounds come from `_vertical_bounds_from_labels` -- TARIKH's own
+    top edge to DATE's own bottom edge. A small symmetric safety pad covers
+    ordinary handwriting variance on both edges; an *additional bottom-only*
+    pad on top of that covers descenders/loops that dip further below
+    DATE's own bottom edge than the top edge needs to account for above
+    TARIKH's -- this is the fix for handwriting tails getting clipped.
 
-    Horizontal bound starts right of whichever label line(s) were found
-    (the rightmost edge, so a wider TARIKH or DATE text is never clipped
-    into), sized in multiples of the document's typical single-line text
-    height -- a stable, format-invariant reference (see
-    `_typical_line_height`) rather than any one box's own height.
-
-    A final absolute clamp (`date_field_max_*_fraction`) caps the crop
-    regardless of what the labels measured, so a bad OCR read can't blow
-    the crop out to an unusable size.
+    Horizontal bound starts right of whichever label line(s) were found,
+    sized in multiples of the document's typical single-line text height,
+    clamped by an absolute page-fraction ceiling as a last line of defense.
     """
     height, width = image_shape[:2]
     top_y, bottom_y, was_estimated = _vertical_bounds_from_labels(tarikh, date, lines)
@@ -210,14 +159,12 @@ def _right_of_labels(
     label_x1 = max(right_edges)
 
     safety_pad = typical_height * settings.date_field_vertical_safety_pad_ratio
+    bottom_extra_pad = typical_height * settings.date_field_bottom_extra_pad_ratio
     crop_y0 = top_y - safety_pad
-    crop_y1 = bottom_y + safety_pad
+    crop_y1 = bottom_y + safety_pad + bottom_extra_pad
     crop_x0 = label_x1
     crop_x1 = crop_x0 + typical_height * settings.date_field_width_typical_heights
 
-    # Absolute safety net: independent of how the bounds above were
-    # derived, the date cell can never legitimately need more than this
-    # fraction of the page. Clamps size, not the anchored top-left origin.
     max_width = width * settings.date_field_max_width_fraction
     max_height = height * settings.date_field_max_height_fraction
     crop_x1 = min(crop_x1, crop_x0 + max_width)
@@ -270,7 +217,7 @@ def extract(
     if tarikh is not None or date is not None:
         crop_box, bounds_estimated = _right_of_labels(tarikh, date, lines, image.shape)
         found_texts = [str(line["text"]) for line in (tarikh, date) if line is not None]
-        anchor_text = " / ".join(dict.fromkeys(found_texts))  # dedupe if same merged line
+        anchor_text = " / ".join(dict.fromkeys(found_texts))
         found_labels = [name for name, line in (("TARIKH", tarikh), ("DATE", date)) if line is not None]
         anchor_mode = "OCR/fuzzy " + "+".join(found_labels) + " anchor"
         if bounds_estimated:
@@ -307,18 +254,23 @@ def extract(
 
     raw_digits = "".join(digit for digit, _confidence in predictions)
     per_digit_confidence = [round(confidence, 4) for _digit, confidence in predictions]
-    # Weakest-link confidence: a single low-confidence digit should flag the
-    # whole date for review, not get averaged away by five confident ones.
     overall_confidence = min(per_digit_confidence) if per_digit_confidence else 0.0
 
+    formatted_date = (
+        f"{raw_digits[0:2]}/{raw_digits[2:4]}/{raw_digits[4:6]}" if len(raw_digits) == 6 else raw_digits
+    )
     if _calendar_valid(raw_digits):
         result.update(
             status="date_candidate",
-            date=f"{raw_digits[0:2]}/{raw_digits[2:4]}/{raw_digits[4:6]}",
+            date=formatted_date,
             validation=f"format and calendar valid; crop source: {anchor_mode}",
         )
     else:
-        result["validation"] = f"digit classification did not form a valid date; crop source: {anchor_mode}"
+        result.update(
+            status="needs_review",
+            date=formatted_date,
+            validation=f"best-guess reading, not a valid calendar date -- verify manually; crop source: {anchor_mode}",
+        )
 
     result.update(
         raw_digits=raw_digits,
