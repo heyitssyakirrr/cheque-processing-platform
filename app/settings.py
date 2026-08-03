@@ -20,6 +20,8 @@ class Settings(BaseSettings):
         "TARIKH", "DATE", "DATF", "D4TE", "TARlKH", "TARlK",
         "TARKH", "TARK", "DAE", "BDATE", "WN",
     )
+    digit_model_backend: str = "torch_pickle" #transformers or torch_pickle
+    digit_model_path: str = "models/developerPratik-mnist-cnn/best_model.pth" #models/farleyknight-vit-mnist or models/developerPratik-mnist-cnn/best_model.pth
 
     @property
     def runs_dir(self) -> Path: return self.root / "data" / "runs"

@@ -1,41 +1,18 @@
-"""Find a printed date label with PaddleOCR, then read its right-side crop with TrOCR."""
+"""Find a printed date label with PaddleOCR, then classify each handwritten
+digit in the date row with a fine-tuned CNN (grid-sliced, not TrOCR)."""
 
 import calendar
 import csv
 from difflib import SequenceMatcher
 import re
-import threading
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image
 
+from app.services import digit_classifier, digit_segmentation
 from app.settings import settings
-
-
-DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})(?!\d)")
-_processor: Any | None = None
-_model: Any | None = None
-_model_lock = threading.Lock()
-
-
-def _trocr() -> tuple[Any, Any]:
-    global _processor, _model
-    if _model is None:
-        with _model_lock:
-            if _model is None:
-                from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-
-                _processor = TrOCRProcessor.from_pretrained(
-                    "microsoft/trocr-base-handwritten", use_fast=True
-                )
-                _model = VisionEncoderDecoderModel.from_pretrained(
-                    "microsoft/trocr-base-handwritten"
-                )
-                _model.eval()
-    return _processor, _model
 
 
 def _normalise(value: str) -> str:
@@ -51,7 +28,7 @@ def _bounds(box: list[list[float]]) -> tuple[float, float, float, float]:
 def _find_anchor(lines: list[dict[str, Any]], image_shape: tuple[int, ...]) -> dict[str, Any] | None:
     """Find TARIKH/DATE despite predictable OCR spelling errors.
 
-    No handwritten digits are considered here.  PaddleOCR's only role in
+    No handwritten digits are considered here. PaddleOCR's only role in
     this service is returning a trustworthy printed-label bounding box.
     """
     aliases = [_normalise(alias) for alias in settings.date_label_aliases]
@@ -82,7 +59,7 @@ def _right_of_anchor(anchor: dict[str, Any], image_shape: tuple[int, ...]) -> tu
     label_height = max(1.0, y1 - y0)
     vertical_pad = max(int(label_height * 2.4), int(height * 0.05))
     # Do not use individual digit boxes or a fixed width: both can omit the
-    # final handwritten digit.  The right margin is stable on this template.
+    # final handwritten digit. The right margin is stable on this template.
     return (
         max(0, int(x1)),
         max(0, int(y0 - vertical_pad)),
@@ -97,37 +74,14 @@ def _template_date_zone(image_shape: tuple[int, ...]) -> tuple[int, int, int, in
     return int(width * 0.60), int(height * 0.10), int(width * 0.99), int(height * 0.38)
 
 
-def _date_from_text(value: str) -> str:
-    match = DATE_PATTERN.search(re.sub(r"\s+", "", value))
-    return match.group(1) if match else ""
-
-
-def _calendar_valid(value: str) -> bool:
-    if not DATE_PATTERN.fullmatch(value):
+def _calendar_valid(digits: str) -> bool:
+    """Validate a concatenated DDMMYY string (no separators, always 6 digits)."""
+    if len(digits) != 6 or not digits.isdigit():
         return False
-    day_text, month_text, year_text = re.split(r"[/-]", value)
-    day, month, year = int(day_text), int(month_text), int(year_text)
+    day, month, year = int(digits[0:2]), int(digits[2:4]), int(digits[4:6])
     if not 1 <= month <= 12:
         return False
-    if len(year_text) == 2:
-        return 1 <= day <= 31
-    return year >= 1 and 1 <= day <= calendar.monthrange(year, month)[1]
-
-
-def _read_trocr(crop: np.ndarray) -> tuple[str, float]:
-    import torch
-
-    processor, model = _trocr()
-    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-    pixels = processor(images=Image.fromarray(rgb), return_tensors="pt").pixel_values
-    with torch.inference_mode():
-        output = model.generate(
-            pixels, max_new_tokens=16, num_beams=4,
-            output_scores=True, return_dict_in_generate=True,
-        )
-    text = processor.batch_decode(output.sequences, skip_special_tokens=True)[0].strip()
-    likelihood = float(np.exp(output.sequences_scores[0].item())) if output.sequences_scores is not None else 0.0
-    return text, likelihood
+    return 1 <= day <= calendar.monthrange(2000 + year, month)[1]
 
 
 def _write_csv(output_dir: Path, result: dict[str, Any]) -> None:
@@ -143,7 +97,7 @@ def extract(
     output_dir: Path,
     width: int = 450,  # retained for API compatibility; crop uses page margin.
 ) -> dict[str, Any]:
-    """PaddleOCR label -> right-side crop -> TrOCR handwritten date."""
+    """PaddleOCR label -> right-side crop -> grid-sliced digit CNN classification."""
     del width
     output_dir.mkdir(parents=True, exist_ok=True)
     anchor = _find_anchor(lines, image.shape)
@@ -161,12 +115,12 @@ def extract(
     result: dict[str, Any] = {
         "status": "needs_review",
         "date": "",
-        "date_source": "",
+        "date_source": "digit_cnn",
         "validation": f"crop source: {anchor_mode}",
-        "raw_text": "",
-        "ocr_candidate_text": "",  # intentionally unused: OCR never reads the handwritten date.
+        "raw_digits": "",
         "anchor_text": anchor_text,
         "confidence": 0.0,
+        "per_digit_confidence": "",
         "crop_box": [x0, y0, x1, y1],
     }
     if crop.size == 0:
@@ -176,15 +130,29 @@ def extract(
 
     crop = cv2.resize(crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
     cv2.imwrite(str(output_dir / "crop.png"), crop)
-    raw_text, confidence = _read_trocr(crop)
-    date = _date_from_text(raw_text)
-    if _calendar_valid(date):
+
+    canonical_slices = digit_segmentation.slice_digits(crop, output_dir, digit_count=settings.digit_count)
+    predictions = digit_classifier.classify_digits(canonical_slices)
+
+    raw_digits = "".join(digit for digit, _confidence in predictions)
+    per_digit_confidence = [round(confidence, 4) for _digit, confidence in predictions]
+    # Weakest-link confidence: a single low-confidence digit should flag the
+    # whole date for review, not get averaged away by five confident ones.
+    overall_confidence = min(per_digit_confidence) if per_digit_confidence else 0.0
+
+    if _calendar_valid(raw_digits):
         result.update(
-            status="date_candidate", date=date, date_source="trocr",
+            status="date_candidate",
+            date=f"{raw_digits[0:2]}/{raw_digits[2:4]}/{raw_digits[4:6]}",
             validation=f"format and calendar valid; crop source: {anchor_mode}",
         )
     else:
-        result["validation"] = f"TrOCR output is not a valid date; crop source: {anchor_mode}"
-    result.update(raw_text=raw_text, confidence=round(confidence, 6))
+        result["validation"] = f"digit classification did not form a valid date; crop source: {anchor_mode}"
+
+    result.update(
+        raw_digits=raw_digits,
+        confidence=round(overall_confidence, 6),
+        per_digit_confidence=str(per_digit_confidence),
+    )
     _write_csv(output_dir, result)
     return result

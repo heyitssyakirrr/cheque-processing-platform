@@ -3,4 +3,4 @@ __pycache__/
 *.py[cod]
 .env
 data/
-models/*.pt
+models/
