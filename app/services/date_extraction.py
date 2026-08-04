@@ -203,6 +203,33 @@ def _write_csv(output_dir: Path, result: dict[str, Any]) -> None:
         writer.writerow({key: str(value) if isinstance(value, list) else value for key, value in result.items()})
 
 
+def _write_digit_confidence_csv(output_dir: Path, top_candidates: list[list[tuple[str, float]]]) -> None:
+    """One row per digit slot, with its top-3 (digit, probability) candidates.
+
+    Kept as review data: no rejection threshold is wired up to this yet --
+    a top-1-confidence cutoff wasn't a reliable enough signal on its own
+    (a blank date field's printed box-border lines can read as a
+    confidently correct digit rather than a low-confidence guess), so that
+    part is deferred until reviewed separately.
+    """
+    fieldnames = [
+        "digit_index",
+        "rank1_digit", "rank1_prob",
+        "rank2_digit", "rank2_prob",
+        "rank3_digit", "rank3_prob",
+    ]
+    with (output_dir / "digit_confidence.csv").open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for index, candidates in enumerate(top_candidates):
+            row: dict[str, Any] = {"digit_index": index}
+            for rank in range(3):
+                digit, prob = candidates[rank] if rank < len(candidates) else ("", "")
+                row[f"rank{rank + 1}_digit"] = digit
+                row[f"rank{rank + 1}_prob"] = round(prob, 4) if prob != "" else ""
+            writer.writerow(row)
+
+
 def extract(
     image: np.ndarray,
     lines: list[dict[str, Any]],
@@ -240,6 +267,7 @@ def extract(
         "per_digit_confidence": "",
         "crop_box": [x0, y0, x1, y1],
         "label_bounds_estimated": bounds_estimated,
+        "digit_top3": "",
     }
     if crop.size == 0:
         result["status"] = "empty_crop"
@@ -250,11 +278,15 @@ def extract(
     cv2.imwrite(str(output_dir / "crop.png"), crop)
 
     canonical_slices = digit_segmentation.slice_digits(crop, output_dir, digit_count=settings.digit_count)
-    predictions = digit_classifier.classify_digits(canonical_slices)
+    top_candidates = digit_classifier.classify_digits(canonical_slices, top_k=3)
+    _write_digit_confidence_csv(output_dir, top_candidates)
 
-    raw_digits = "".join(digit for digit, _confidence in predictions)
-    per_digit_confidence = [round(confidence, 4) for _digit, confidence in predictions]
+    raw_digits = "".join(candidates[0][0] for candidates in top_candidates)
+    per_digit_confidence = [round(candidates[0][1], 4) for candidates in top_candidates]
     overall_confidence = min(per_digit_confidence) if per_digit_confidence else 0.0
+    result["digit_top3"] = str(
+        [[(digit, round(prob, 4)) for digit, prob in candidates] for candidates in top_candidates]
+    )
 
     formatted_date = (
         f"{raw_digits[0:2]}/{raw_digits[2:4]}/{raw_digits[4:6]}" if len(raw_digits) == 6 else raw_digits

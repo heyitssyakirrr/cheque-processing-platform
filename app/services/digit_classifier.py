@@ -59,28 +59,33 @@ def _label_to_digit(index: int) -> str:
     return label.split("_")[-1] if label.upper().startswith("LABEL_") else label
 
 
-def _predict_transformers(canonical: np.ndarray) -> tuple[str, float]:
+def _predict_transformers(canonical: np.ndarray, top_k: int) -> list[tuple[str, float]]:
     image = Image.fromarray(canonical).convert("RGB")
     inputs = _processor(images=image, return_tensors="pt")
     with torch.inference_mode():
         probs = torch.softmax(_model(**inputs).logits, dim=1).squeeze()
-    index = int(torch.argmax(probs).item())
-    return _label_to_digit(index), float(probs[index].item())
+    values, indices = torch.topk(probs, k=min(top_k, probs.numel()))
+    return [(_label_to_digit(int(index)), float(value)) for value, index in zip(values.tolist(), indices.tolist())]
 
 
-def _predict_torch_pickle(canonical: np.ndarray) -> tuple[str, float]:
+def _predict_torch_pickle(canonical: np.ndarray, top_k: int) -> list[tuple[str, float]]:
     resized = np.array(Image.fromarray(canonical).resize((28, 28)))
     tensor = torch.from_numpy(resized).float().div(255)
     tensor = (tensor - _MNIST_MEAN) / _MNIST_STD
     tensor = tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, 28, 28)
     with torch.inference_mode():
         probs = torch.softmax(_model(tensor), dim=1).squeeze()
-    index = int(torch.argmax(probs).item())
-    return str(index), float(probs[index].item())
+    values, indices = torch.topk(probs, k=min(top_k, probs.numel()))
+    return [(str(int(index)), float(value)) for value, index in zip(values.tolist(), indices.tolist())]
 
 
-def classify_digits(canonical_slices: list[np.ndarray]) -> list[tuple[str, float]]:
-    """Return (digit_char, confidence) for each canonical digit image, in order."""
+def classify_digits(canonical_slices: list[np.ndarray], top_k: int = 3) -> list[list[tuple[str, float]]]:
+    """Return the top-`top_k` (digit_char, confidence) candidates for each
+    canonical digit image, in order, ranked highest-confidence first.
+    predictions[i][0] is the chosen digit for that slot; the rest are for
+    inspection (e.g. reviewing digit_confidence.csv to eventually decide a
+    min-confidence cutoff for rejecting a blank/no-date field).
+    """
     _load()
     predict = _predict_transformers if settings.digit_model_backend == "transformers" else _predict_torch_pickle
-    return [predict(digit_image) for digit_image in canonical_slices]
+    return [predict(digit_image, top_k) for digit_image in canonical_slices]
