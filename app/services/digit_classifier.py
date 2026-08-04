@@ -39,7 +39,7 @@ def _load() -> None:
         if settings.digit_model_backend == "transformers":
             from transformers import AutoImageProcessor, AutoModelForImageClassification
 
-            _processor = AutoImageProcessor.from_pretrained(settings.digit_model_path)
+            _processor = AutoImageProcessor.from_pretrained(settings.digit_model_path, use_fast=True)
             _model = AutoModelForImageClassification.from_pretrained(settings.digit_model_path)
             _model.eval()
         elif settings.digit_model_backend == "torch_pickle":
