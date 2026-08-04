@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     yolo_model_path: str = "models/signature-yolov8.torchscript"
     hf_yolo_repo_id: str = ""
     hf_yolo_filename: str = ""
-    signature_imgsz: int = 1280
+    signature_imgsz: int = 960
     signature_iou: float = 0.70
     signature_logging_floor: float = 0.01
     # Measurements in the UI are expressed against this reference width, so
