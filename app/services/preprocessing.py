@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from app.settings import settings
+
 
 @dataclass(frozen=True)
 class PreprocessOptions:
@@ -101,14 +103,20 @@ def prepare_signature_image(
     The dedicated signature project does not denoise, increase contrast, or
     deskew before inference.  Those transforms can erase light pen strokes,
     so OCR receives its enhanced image while YOLO receives this colour copy.
+
+    Uses `settings.signature_max_long_edge` rather than
+    `options.max_long_edge` -- the latter is what date_extraction.py's crop
+    geometry is calibrated against, so it can't move. Signature detection
+    has no such dependency and benefits from more resolution (matches the
+    max_dim=3000 already validated in script.py), hence its own cap.
     """
     height, width = image_bgr.shape[:2]
     short_edge, long_edge = min(height, width), max(height, width)
     scale = 1.0
     if short_edge < options.min_short_edge:
         scale = min(options.min_short_edge / short_edge, options.max_upscale_factor)
-    if long_edge * scale > options.max_long_edge:
-        scale = options.max_long_edge / long_edge
+    if long_edge * scale > settings.signature_max_long_edge:
+        scale = settings.signature_max_long_edge / long_edge
     if abs(scale - 1.0) <= 1e-6:
         return image_bgr.copy(), 1.0
     interpolation = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA

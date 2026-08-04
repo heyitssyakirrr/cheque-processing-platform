@@ -12,6 +12,13 @@ class Settings(BaseSettings):
     signature_imgsz: int = 960
     signature_iou: float = 0.70
     signature_logging_floor: float = 0.01
+    # Deliberately separate from PreprocessOptions.max_long_edge (2200) --
+    # that value is what date_extraction.py's geometry is calibrated
+    # against, so it can't move. Signature detection has no such
+    # calibration dependency and benefits from more resolution (matches
+    # script.py's proven max_dim=3000), so it gets its own cap instead of
+    # sharing the OCR/date path's.
+    signature_max_long_edge: int = 3000
     # Measurements in the UI are expressed against this reference width, so
     # date geometry remains stable when preprocessing rescales a cheque.
     date_width_reference_edge: int = 2200
