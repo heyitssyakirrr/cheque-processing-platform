@@ -121,3 +121,25 @@ def prepare_signature_image(
         return image_bgr.copy(), 1.0
     interpolation = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA
     return cv2.resize(image_bgr, None, fx=scale, fy=scale, interpolation=interpolation), float(scale)
+
+
+def crop_signature_zone(image_bgr: np.ndarray) -> tuple[np.ndarray, tuple[int, int]]:
+    """Crop to the region a signature reliably occupies on this cheque
+    template, before running YOLO -- entirely separate from resolution/
+    format tuning. Forcing the model to search a smaller, targeted area
+    instead of the full cheque means genuine signature ink occupies far
+    more of the input pixels at any given imgsz, rather than competing
+    against the dense printed background/security pattern across the
+    whole page. Mirrors the same fixed-fraction-of-page approach already
+    used for the date fallback zone (see date_extraction._template_date_zone),
+    just calibrated to where a signature sits instead of where the date does.
+
+    Returns (cropped_image, (x_offset, y_offset)) so detection boxes can be
+    translated back into the full image's coordinate frame afterward.
+    """
+    height, width = image_bgr.shape[:2]
+    x0 = int(width * settings.signature_zone_left_fraction)
+    y0 = int(height * settings.signature_zone_top_fraction)
+    x1 = width
+    y1 = int(height * settings.signature_zone_bottom_fraction)
+    return image_bgr[y0:y1, x0:x1], (x0, y0)

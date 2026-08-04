@@ -10,7 +10,12 @@ import cv2
 
 from app.services.date_extraction import extract as extract_date
 from app.services.field_extraction import extract as extract_fields
-from app.services.preprocessing import PreprocessOptions, prepare_signature_image, preprocess
+from app.services.preprocessing import (
+    PreprocessOptions,
+    crop_signature_zone,
+    prepare_signature_image,
+    preprocess,
+)
 from app.services.signature_detection import detect as detect_signatures
 from app.services.text_detection import detect as detect_text
 from app.settings import settings
@@ -74,10 +79,13 @@ def process(
     signature_image, signature_scale = prepare_signature_image(original, options)
     preprocessing_metadata["signature_scale"] = round(signature_scale, 4)
 
+    signature_zone, signature_offset = crop_signature_zone(signature_image)
     signature_detections = detect_signatures(
-        signature_image,
+        signature_zone,
         run_dir / "signature",
         decision_threshold=yolo_threshold,
+        crop_offset=signature_offset,
+        full_image=signature_image,
     )
     text_lines = detect_text(preprocessed, run_dir / "text")
     date_result = extract_date(

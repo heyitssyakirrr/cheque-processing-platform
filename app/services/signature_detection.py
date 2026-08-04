@@ -66,9 +66,23 @@ def detect(
     output_dir: Path,
     decision_threshold: float = 0.35,
     logging_floor: float = 0.10,
+    crop_offset: tuple[int, int] = (0, 0),
+    full_image: np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
-    """Detect signatures and save annotated image, accepted crops, and CSV."""
+    """Detect signatures and save annotated image, accepted crops, and CSV.
+
+    `image` is what inference actually runs on -- pass a zone crop (see
+    preprocessing.crop_signature_zone) to search a smaller, targeted area
+    instead of the whole cheque. `crop_offset` is that crop's (x, y) origin
+    in `full_image`'s coordinate frame; every detected box gets translated
+    by this offset before being recorded/drawn, so annotations and crops
+    still land correctly on the full cheque, not just the searched zone.
+    If `full_image` is omitted, `image` is used for both inference and
+    annotation (offset should stay (0, 0) in that case).
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
+    offset_x, offset_y = crop_offset
+    canvas = full_image if full_image is not None else image
 
     inference = _model_instance().predict(
         image,
@@ -78,17 +92,40 @@ def detect(
         imgsz=settings.signature_imgsz,
         conf=min(logging_floor, settings.signature_logging_floor),
         iou=settings.signature_iou,
-        max_det=3,
+        max_det=2,
         verbose=False,
     )[0]
 
     records: list[dict[str, Any]] = []
-    annotated = image.copy()
+    annotated = canvas.copy()
     crop_dir = output_dir / "crops"
+
+    # Always visible, regardless of detections -- lets you check the zone
+    # fractions in settings.py against where a signature actually sits,
+    # instead of guessing whether they're right.
+    zone_h, zone_w = image.shape[:2]
+    cv2.rectangle(
+        annotated,
+        (offset_x, offset_y),
+        (offset_x + zone_w, offset_y + zone_h),
+        (255, 140, 0),
+        2,
+    )
+    cv2.putText(
+        annotated,
+        "search zone",
+        (offset_x + 4, offset_y + 20),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 140, 0),
+        2,
+    )
 
     boxes = inference.boxes if inference.boxes is not None else []
     for index, box in enumerate(boxes, start=1):
         x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+        x1, x2 = x1 + offset_x, x2 + offset_x
+        y1, y2 = y1 + offset_y, y2 + offset_y
         confidence = float(box.conf[0])
         accepted = confidence >= decision_threshold
         record = {
@@ -116,7 +153,7 @@ def detect(
 
         if accepted:
             crop_dir.mkdir(exist_ok=True)
-            crop = image[max(0, y1):y2, max(0, x1):x2]
+            crop = canvas[max(0, y1):y2, max(0, x1):x2]
             cv2.imwrite(str(crop_dir / f"signature_{index}.png"), crop)
 
     cv2.imwrite(str(output_dir / "annotated.png"), annotated)

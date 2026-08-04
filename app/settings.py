@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     yolo_model_path: str = "models/signature-yolov8.torchscript"
     hf_yolo_repo_id: str = ""
     hf_yolo_filename: str = ""
-    signature_imgsz: int = 960
+    signature_imgsz: int = 1280
     signature_iou: float = 0.70
     signature_logging_floor: float = 0.01
     # Deliberately separate from PreprocessOptions.max_long_edge (2200) --
@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     # script.py's proven max_dim=3000), so it gets its own cap instead of
     # sharing the OCR/date path's.
     signature_max_long_edge: int = 3000
+    # Fixed-fraction crop window (of the resized signature image) where a
+    # signature reliably sits on this cheque template -- generous on
+    # purpose, tune these three numbers based on what you see once
+    # tested, rather than the model/resolution settings above.
+    signature_zone_left_fraction: float = 0.30
+    signature_zone_top_fraction: float = 0.55
+    signature_zone_bottom_fraction: float = 0.92
     # Measurements in the UI are expressed against this reference width, so
     # date geometry remains stable when preprocessing rescales a cheque.
     date_width_reference_edge: int = 2200
