@@ -138,19 +138,7 @@ def _right_of_labels(
     lines: list[dict[str, Any]],
     image_shape: tuple[int, ...],
 ) -> tuple[tuple[int, int, int, int], bool]:
-    """Crop tightly around the handwritten date cell, right of TARIKH/DATE.
-
-    Vertical bounds come from `_vertical_bounds_from_labels` -- TARIKH's own
-    top edge to DATE's own bottom edge. A small symmetric safety pad covers
-    ordinary handwriting variance on both edges; an *additional bottom-only*
-    pad on top of that covers descenders/loops that dip further below
-    DATE's own bottom edge than the top edge needs to account for above
-    TARIKH's -- this is the fix for handwriting tails getting clipped.
-
-    Horizontal bound starts right of whichever label line(s) were found,
-    sized in multiples of the document's typical single-line text height,
-    clamped by an absolute page-fraction ceiling as a last line of defense.
-    """
+    """Crop tightly around the handwritten date cell, right of TARIKH/DATE."""
     height, width = image_shape[:2]
     top_y, bottom_y, was_estimated = _vertical_bounds_from_labels(tarikh, date, lines)
     typical_height = _typical_line_height(lines) or max(1.0, bottom_y - top_y)
@@ -204,14 +192,7 @@ def _write_csv(output_dir: Path, result: dict[str, Any]) -> None:
 
 
 def _write_digit_confidence_csv(output_dir: Path, top_candidates: list[list[tuple[str, float]]]) -> None:
-    """One row per digit slot, with its top-3 (digit, probability) candidates.
-
-    Kept as review data: no rejection threshold is wired up to this yet --
-    a top-1-confidence cutoff wasn't a reliable enough signal on its own
-    (a blank date field's printed box-border lines can read as a
-    confidently correct digit rather than a low-confidence guess), so that
-    part is deferred until reviewed separately.
-    """
+    """One row per digit slot, with its top-3 (digit, probability) candidates."""
     fieldnames = [
         "digit_index",
         "rank1_digit", "rank1_prob",
@@ -267,7 +248,7 @@ def extract(
         "per_digit_confidence": "",
         "crop_box": [x0, y0, x1, y1],
         "label_bounds_estimated": bounds_estimated,
-        "digit_top3": "",
+        "digit_top3": [],
     }
     if crop.size == 0:
         result["status"] = "empty_crop"
@@ -284,9 +265,13 @@ def extract(
     raw_digits = "".join(candidates[0][0] for candidates in top_candidates)
     per_digit_confidence = [round(candidates[0][1], 4) for candidates in top_candidates]
     overall_confidence = min(per_digit_confidence) if per_digit_confidence else 0.0
-    result["digit_top3"] = str(
-        [[(digit, round(prob, 4)) for digit, prob in candidates] for candidates in top_candidates]
-    )
+    # A real nested list (not a str() repr) -- round-trips through
+    # json.dumps for result.json and is directly iterable in the UI
+    # template, whether from a live in-memory result or one reloaded from
+    # result.json on disk.
+    result["digit_top3"] = [
+        [[digit, round(prob, 4)] for digit, prob in candidates] for candidates in top_candidates
+    ]
 
     formatted_date = (
         f"{raw_digits[0:2]}/{raw_digits[2:4]}/{raw_digits[4:6]}" if len(raw_digits) == 6 else raw_digits

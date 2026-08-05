@@ -80,9 +80,7 @@ class Settings(BaseSettings):
     # image and can be pulled toward including that shading as "foreground"
     # -- a fixed cutoff isn't swayed by what else happens to be in the crop.
     digit_ink_threshold: int = 140
-    
-    @property
-    def runs_dir(self) -> Path: return self.root / "data" / "runs"
+
     @property
     def batches_dir(self) -> Path: return self.root / "data" / "batches"
     @property

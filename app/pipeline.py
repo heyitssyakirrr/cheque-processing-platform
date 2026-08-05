@@ -26,9 +26,17 @@ def _safe_name(value: str) -> str:
 
 
 def _create_run_directory(batch_id: str, sequence: int, source_name: str) -> tuple[str, Path]:
-    """Keep every run self-contained while making files sort by batch/order."""
-    run_id = f"{batch_id}-{sequence:03d}-{_safe_name(source_name)}"
-    run_dir = settings.runs_dir / run_id
+    """Nest every image's folder inside its batch folder.
+
+    Previously every run lived flat under data/runs/, distinguishable only
+    by a timestamp embedded in the folder name -- hard to browse once more
+    than one batch exists. Now each batch gets its own folder, and each
+    image inside it gets a short, sequence-ordered subfolder, so
+    data/batches/<batch_id>/ directly shows every image from that upload
+    with nothing to disambiguate.
+    """
+    run_id = f"{sequence:03d}-{_safe_name(source_name)}"
+    run_dir = settings.batches_dir / batch_id / run_id
 
     for name in ("original", "preprocessed", "signature", "text", "date"):
         (run_dir / name).mkdir(parents=True, exist_ok=True)

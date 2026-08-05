@@ -648,6 +648,175 @@ figcaption a {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Digit-by-digit confidence table                                            */
+/* -------------------------------------------------------------------------- */
+
+.digit-confidence {
+  margin-top: 15px;
+}
+
+.digit-confidence > small {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.digit-table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid #edf0f2;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.digit-table th,
+.digit-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf0f2;
+  text-align: left;
+}
+
+.digit-table thead th {
+  background: #fafafa;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.digit-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.digit-table td em {
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.digit-table td.digit-rank-1 {
+  font-weight: 700;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Accuracy report                                                            */
+/* -------------------------------------------------------------------------- */
+
+.accuracy-panel {
+  max-width: 1250px;
+  margin: 0 auto 28px;
+  padding: 22px 25px;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.accuracy-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.accuracy-heading h3 {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.accuracy-summary {
+  margin: 0 0 18px;
+}
+
+.accuracy-table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid #edf0f2;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.accuracy-table th,
+.accuracy-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid #edf0f2;
+  text-align: left;
+}
+
+.accuracy-table thead th {
+  background: #fafafa;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.accuracy-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.accuracy-table .gt-date {
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.accuracy-table td.match,
+.accuracy-table span.match {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.accuracy-table td.mismatch,
+.accuracy-table span.mismatch {
+  color: var(--red);
+  font-weight: 700;
+}
+
+.ground-truth-form {
+  margin-top: 16px;
+}
+
+.ground-truth-form summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ground-truth-form p {
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ground-truth-form code {
+  padding: 2px 5px;
+  background: #f3f4f6;
+  border-radius: 4px;
+}
+
+.ground-truth-form textarea {
+  width: 100%;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #dfe1e5;
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.ground-truth-form .primary-button {
+  width: auto;
+  padding: 10px 16px;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Responsive layout                                                          */
 /* -------------------------------------------------------------------------- */
 
@@ -722,5 +891,9 @@ figcaption a {
 
   .image-frame {
     height: 190px;
+  }
+
+  .digit-table {
+    font-size: 11px;
   }
 }

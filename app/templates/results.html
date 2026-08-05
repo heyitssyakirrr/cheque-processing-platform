@@ -4,19 +4,132 @@
 <body>
   <header class="topbar"><a class="brand" href="/"><span class="brand-mark">P</span><span><strong>PUBLIC BANK</strong><small>BERHAD · CHEQUE INTELLIGENCE</small></span></a><a class="outline-button" href="/">+ New upload</a></header>
   <main class="results-page">
-    <div class="results-heading"><div><p class="eyebrow">ANALYSIS COMPLETE</p><h1>{{ results|length }} cheque{{ '' if results|length == 1 else 's' }} processed</h1><p>Batch {{ batch_id }} — results are kept in upload order with review evidence.</p></div><a class="outline-button" href="/batches/{{ batch_id }}/summary.csv">Download batch CSV</a></div>
-    <section class="summary-strip"><div><small>Images processed</small><strong>{{ results|length }}</strong></div><div><small>Signatures detected</small><strong>{{ results|selectattr('result.signature.exists')|list|length }}</strong></div><div><small>Date candidates</small><strong>{{ results|selectattr('result.date.date')|list|length }}</strong></div></section>
-    <section class="result-list">
+    <div class="results-heading">
+      <div>
+        <p class="eyebrow" id="results-eyebrow">{{ 'PROCESSING' if live else 'ANALYSIS COMPLETE' }}</p>
+        <h1 id="results-title">
+          {% if live %}Analysing cheque images…{% else %}{{ results|length }} cheque{{ '' if results|length == 1 else 's' }} processed{% endif %}
+        </h1>
+        <p id="results-subtitle">
+          {% if live %}Results appear below as each image finishes.{% else %}Batch {{ batch_id }} — results are kept in upload order with review evidence.{% endif %}
+        </p>
+      </div>
+      <a class="outline-button" id="download-summary" href="/batches/{{ batch_id }}/summary.csv" {{ 'hidden' if live else '' }}>Download batch summary CSV</a>
+    </div>
+    <section class="summary-strip">
+      <div><small>Images processed</small><strong id="stat-processed">{{ results|length }}</strong></div>
+      <div><small>Signatures detected</small><strong id="stat-signatures">{{ results|selectattr('result.signature.exists')|list|length }}</strong></div>
+      <div><small>Date candidates</small><strong id="stat-dates">{{ results|selectattr('result.date.status', 'equalto', 'date_candidate')|list|length }}</strong></div>
+    </section>
+
+    {% if not live %}
+    <section class="accuracy-panel">
+      {% if accuracy_report %}
+        <div class="accuracy-heading">
+          <h3>Accuracy report</h3>
+          <a class="outline-button" href="/batches/{{ batch_id }}/accuracy_report.csv">Download accuracy CSV</a>
+        </div>
+        <div class="summary-strip accuracy-summary">
+          <div><small>Cheques scored</small><strong>{{ accuracy_report.summary.cheques_scored }}</strong></div>
+          <div><small>Signature accuracy</small><strong>{{ accuracy_report.summary.signature_accuracy_pct }}%</strong><span>{{ accuracy_report.summary.signature_matches }}/{{ accuracy_report.summary.cheques_scored }} matched count</span></div>
+          <div><small>Digit accuracy</small><strong>{{ accuracy_report.summary.digit_accuracy_pct }}%</strong><span>{{ accuracy_report.summary.total_digit_correct }}/{{ accuracy_report.summary.total_digit_count }} digits correct</span></div>
+          <div><small>Exact date match</small><strong>{{ accuracy_report.summary.exact_date_match_pct }}%</strong><span>{{ accuracy_report.summary.exact_date_matches }}/{{ accuracy_report.summary.cheques_scored }} cheques</span></div>
+        </div>
+        <table class="accuracy-table">
+          <thead><tr><th>File</th><th>Signature (GT / predicted)</th><th>Date (GT vs predicted)</th><th>Digit accuracy</th></tr></thead>
+          <tbody>
+          {% for row in accuracy_report.rows %}
+            <tr>
+              <td>{{ row.filename }}</td>
+              <td class="{{ 'match' if row.signature.match else 'mismatch' }}">{{ row.signature.gt_count }} / {{ row.signature.predicted_count }}</td>
+              <td>
+                <span class="gt-date">{{ row.digit.gt_date }}</span> →
+                {% if row.digit.per_digit_correct %}
+                  {% for char in row.digit.predicted_raw %}<span class="{{ 'match' if row.digit.per_digit_correct[loop.index0] else 'mismatch' }}">{{ char }}</span>{% endfor %}
+                {% else %}
+                  <span class="{{ 'match' if row.digit.exact_match else 'mismatch' }}">{{ row.digit.predicted_raw }}</span>
+                {% endif %}
+              </td>
+              <td>{{ row.digit.digit_accuracy_pct ~ '%' if row.digit.digit_accuracy_pct is not none else ('correct' if row.digit.exact_match else 'incorrect') }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <details class="ground-truth-form"><summary>Rescore with updated ground truth</summary>
+          <form action="/batches/{{ batch_id }}/ground-truth" method="post">
+            <textarea name="ground_truth" rows="6" placeholder="bank_cheque_1: 2, 100726&#10;bank_cheque_5: 2, no date"></textarea>
+            <button class="primary-button" type="submit"><span>Rescore batch</span><b>→</b></button>
+          </form>
+        </details>
+      {% else %}
+        <details class="ground-truth-form" open><summary>Score this batch against ground truth</summary>
+          <p>Paste one line per cheque: <code>filename: signature_count, date (DDMMYY or "no date")</code></p>
+          <form action="/batches/{{ batch_id }}/ground-truth" method="post">
+            <textarea name="ground_truth" rows="6" placeholder="bank_cheque_1: 2, 100726&#10;bank_cheque_3: 0, 010626&#10;bank_cheque_5: 2, no date"></textarea>
+            <button class="primary-button" type="submit"><span>Score batch</span><b>→</b></button>
+          </form>
+        </details>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    <section class="result-list" id="result-list">
     {% for item in results %}
-      <article class="cheque-card" id="{{ item.run_id }}">
-        <div class="cheque-card-header"><div><span class="result-number">{{ '%02d'|format(loop.index) }}</span><h2>{{ item.filename }}</h2><small>Run ID: {{ item.run_id }}</small></div><a class="download-link" href="/runs/{{ item.run_id }}/result.json">Download JSON</a></div>
-        <div class="metric-grid"><div class="metric"><small>Signature</small><strong class="{{ 'positive' if item.result.signature.exists else 'neutral' }}">{{ 'Detected' if item.result.signature.exists else 'Not detected' }}</strong><span>{{ item.result.signature.detections|length }} model candidate(s)</span></div><div class="metric"><small>Date candidate</small><strong>{{ item.result.date.date or 'Review needed' }}</strong><span>{{ item.result.date.date_source or item.result.date.status|replace('_', ' ')|title }}</span></div><div class="metric"><small>Payee candidate</small><strong>{{ item.result.fields.payee_candidate or 'Not found' }}</strong><span>OCR-assisted · review required</span></div><div class="metric"><small>Amount candidate</small><strong>{{ item.result.fields.amount_candidate or 'Not found' }}</strong><span>OCR-assisted · review required</span></div></div>
-        <div class="artifact-grid"><figure><div class="image-frame"><img src="/runs/{{ item.run_id }}/signature/annotated.png" alt="Signature detection annotation"></div><figcaption><span>Signature detection</span><a href="/runs/{{ item.run_id }}/signature/detections.csv">CSV</a></figcaption></figure><figure><div class="image-frame"><img src="/runs/{{ item.run_id }}/text/annotated.png" alt="Text detection annotation"></div><figcaption><span>OCR text coordinates</span><a href="/runs/{{ item.run_id }}/text/detections.csv">CSV</a></figcaption></figure>{% if item.result.date.crop_box %}<figure><div class="image-frame"><img src="/runs/{{ item.run_id }}/date/crop.png" alt="Date crop"></div><figcaption><span>Date crop used for TrOCR</span><a href="/runs/{{ item.run_id }}/date/result.csv">CSV</a></figcaption></figure>{% endif %}</div>
-        <details class="evidence-panel"><summary>Date and OCR evidence <small>raw model output; confirm before use</small></summary><div class="evidence-grid"><div><small>Date label found by PaddleOCR</small><strong>{{ item.result.date.anchor_text or 'No anchor found' }}</strong><small>Handwritten digits</small><strong>Read by TrOCR only</strong></div><div><small>TrOCR raw text</small><strong>{{ item.result.date.raw_text or 'No result' }}</strong><small>Sequence likelihood (not calibrated)</small><strong>{{ item.result.date.confidence }}</strong></div><div><small>Validation</small><strong>{{ item.result.date.validation }}</strong><small>Crop coordinates</small><strong>{{ item.result.date.crop_box or '—' }}</strong></div></div><div class="ocr-lines"><small>Full PaddleOCR text</small>{% for line in item.result.text.detections %}<span>{{ line.text }} <em>{{ '%.2f'|format(line.confidence) }}</em></span>{% else %}<span>No text regions detected.</span>{% endfor %}</div></details>
-        <div class="cheque-footer"><span>Preprocessing: scale {{ item.result.preprocessing.scale }} · deskew {{ item.result.preprocessing.deskew_degrees }}° · {{ item.result.text.count }} text regions</span><a href="/runs/{{ item.run_id }}/summary.csv">Download run summary CSV</a></div>
-      </article>
+      {% set loop_index = loop.index %}
+      {% include "_cheque_card.html" with context %}
     {% endfor %}
     </section>
   </main>
+
+  {% if live %}
+  <script>
+    const resultList = document.getElementById('result-list');
+    const statProcessed = document.getElementById('stat-processed');
+    const statSignatures = document.getElementById('stat-signatures');
+    const statDates = document.getElementById('stat-dates');
+    const resultsTitle = document.getElementById('results-title');
+    const resultsSubtitle = document.getElementById('results-subtitle');
+    const resultsEyebrow = document.getElementById('results-eyebrow');
+    const downloadSummary = document.getElementById('download-summary');
+
+    let processed = 0, signatures = 0, dates = 0;
+    const source = new EventSource('/batches/{{ batch_id }}/stream');
+
+    source.addEventListener('batch_start', event => {
+      const data = JSON.parse(event.data);
+      resultsTitle.textContent = `Analysing ${data.total} image${data.total === 1 ? '' : 's'}…`;
+    });
+
+    source.addEventListener('cheque', event => {
+      const data = JSON.parse(event.data);
+      resultList.insertAdjacentHTML('beforeend', data.html);
+      processed += 1;
+      if (data.signature_detected) signatures += 1;
+      if (data.date_status === 'date_candidate') dates += 1;
+      statProcessed.textContent = processed;
+      statSignatures.textContent = signatures;
+      statDates.textContent = dates;
+    });
+
+    source.addEventListener('cheque_error', event => {
+      const data = JSON.parse(event.data);
+      resultList.insertAdjacentHTML(
+        'beforeend',
+        `<article class="cheque-card"><div class="cheque-card-header"><div><h2>${data.filename}</h2><small>Processing failed</small></div></div><div class="cheque-footer"><span>${data.error}</span></div></article>`,
+      );
+    });
+
+    source.addEventListener('batch_done', event => {
+      const data = JSON.parse(event.data);
+      resultsEyebrow.textContent = 'ANALYSIS COMPLETE';
+      resultsTitle.textContent = `${data.completed} cheque${data.completed === 1 ? '' : 's'} processed`;
+      resultsSubtitle.textContent = 'Batch {{ batch_id }} — results are kept in upload order with review evidence.';
+      downloadSummary.hidden = false;
+      source.close();
+    });
+
+    source.onerror = () => source.close();
+  </script>
+  {% endif %}
 </body>
 </html>

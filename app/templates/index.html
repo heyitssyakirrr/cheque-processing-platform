@@ -19,7 +19,7 @@
     <section class="hero">
       <p class="eyebrow">DOCUMENT ANALYSIS</p>
       <h1>Process cheques with<br><em>clarity and confidence.</em></h1>
-      <p>Upload one or many cheque images. Each receives a full signature, OCR, and handwritten-date analysis with downloadable evidence.</p>
+      <p>Upload one or many cheque images. Each receives a full signature, OCR, and handwritten-date analysis with review evidence. You'll be taken to a results page where each image appears as soon as it's ready.</p>
     </section>
 
     <section class="workspace-card">
@@ -55,7 +55,7 @@
   </main>
 
   <div class="processing-overlay" id="processing-overlay" hidden>
-    <div class="processing-card"><span class="loader"></span><h2>Processing cheque images</h2><p id="processing-status">Preparing secure analysis…</p></div>
+    <div class="processing-card"><span class="loader"></span><h2>Starting analysis</h2><p id="processing-status">Uploading images…</p></div>
   </div>
 
   <script>
@@ -71,9 +71,16 @@
     ['dragenter', 'dragover'].forEach(event => dropzone.addEventListener(event, event => { event.preventDefault(); dropzone.classList.add('is-dragging'); }));
     ['dragleave', 'drop'].forEach(event => dropzone.addEventListener(event, event => { event.preventDefault(); dropzone.classList.remove('is-dragging'); }));
     dropzone.addEventListener('drop', event => { input.files = event.dataTransfer.files; showFiles(input.files); });
+
+    // This overlay only covers the brief upload + redirect moment -- the
+    // browser navigates away to the dedicated results page as soon as
+    // /process responds (a fast 303 redirect; the actual per-image
+    // processing happens after that, in the background, streamed into
+    // the results page itself).
     document.getElementById('upload-form').addEventListener('submit', () => {
       document.getElementById('processing-overlay').hidden = false;
-      document.getElementById('processing-status').textContent = `Analysing ${input.files.length} image${input.files.length === 1 ? '' : 's'} — this may take a moment.`;
+      document.getElementById('processing-status').textContent =
+        `Uploading ${input.files.length} image${input.files.length === 1 ? '' : 's'}…`;
     });
   </script>
 </body>
