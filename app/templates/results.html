@@ -30,10 +30,26 @@
           <a class="outline-button" href="/batches/{{ batch_id }}/accuracy_report.csv">Download accuracy CSV</a>
         </div>
         <div class="summary-strip accuracy-summary">
-          <div><small>Cheques scored</small><strong>{{ accuracy_report.summary.cheques_scored }}</strong></div>
-          <div><small>Signature accuracy</small><strong>{{ accuracy_report.summary.signature_accuracy_pct }}%</strong><span>{{ accuracy_report.summary.signature_matches }}/{{ accuracy_report.summary.cheques_scored }} matched count</span></div>
-          <div><small>Digit accuracy</small><strong>{{ accuracy_report.summary.digit_accuracy_pct }}%</strong><span>{{ accuracy_report.summary.total_digit_correct }}/{{ accuracy_report.summary.total_digit_count }} digits correct</span></div>
-          <div><small>Exact date match</small><strong>{{ accuracy_report.summary.exact_date_match_pct }}%</strong><span>{{ accuracy_report.summary.exact_date_matches }}/{{ accuracy_report.summary.cheques_scored }} cheques</span></div>
+          <div>
+            <small>Signatures detected</small>
+            <strong>{{ accuracy_report.summary.signature_detection_rate_pct }}%</strong>
+            <span>{{ accuracy_report.summary.total_predicted_signatures }}/{{ accuracy_report.summary.total_gt_signatures }} signatures found</span>
+          </div>
+          <div>
+            <small>Cheques with a signature found</small>
+            <strong>{{ accuracy_report.summary.presence_detection_rate_pct }}%</strong>
+            <span>{{ accuracy_report.summary.cheques_with_at_least_one_detected }}/{{ accuracy_report.summary.cheques_with_signatures }} cheques</span>
+          </div>
+          <div>
+            <small>Digit accuracy</small>
+            <strong>{{ accuracy_report.summary.digit_accuracy_pct }}%</strong>
+            <span>{{ accuracy_report.summary.total_digit_correct }}/{{ accuracy_report.summary.total_digit_count }} digits correct</span>
+          </div>
+          <div>
+            <small>Exact date match</small>
+            <strong>{{ accuracy_report.summary.exact_date_match_pct }}%</strong>
+            <span>{{ accuracy_report.summary.exact_date_matches }}/{{ accuracy_report.summary.cheques_scored }} cheques</span>
+          </div>
         </div>
         <table class="accuracy-table">
           <thead><tr><th>File</th><th>Signature (GT / predicted)</th><th>Date (GT vs predicted)</th><th>Digit accuracy</th></tr></thead>
@@ -55,23 +71,18 @@
           {% endfor %}
           </tbody>
         </table>
-        <details class="ground-truth-form"><summary>Rescore with updated ground truth</summary>
-          <form action="/batches/{{ batch_id }}/ground-truth" method="post">
-            <textarea name="ground_truth" rows="6" placeholder="bank_cheque_1: 2, 100726&#10;bank_cheque_5: 2, no date"></textarea>
-            <button class="primary-button" type="submit"><span>Rescore batch</span><b>→</b></button>
-          </form>
-        </details>
+        <form class="rescore-form" action="/batches/{{ batch_id }}/ground-truth" method="post">
+          <button class="outline-button" type="submit">Rescore against ground_truth.csv</button>
+        </form>
       {% else %}
-        <details class="ground-truth-form" open><summary>Score this batch against ground truth</summary>
-          <p>Paste one line per cheque: <code>filename: signature_count, date (DDMMYY or "no date")</code></p>
-          <form action="/batches/{{ batch_id }}/ground-truth" method="post">
-            <textarea name="ground_truth" rows="6" placeholder="bank_cheque_1: 2, 100726&#10;bank_cheque_3: 0, 010626&#10;bank_cheque_5: 2, no date"></textarea>
-            <button class="primary-button" type="submit"><span>Score batch</span><b>→</b></button>
-          </form>
-        </details>
+        <p class="no-ground-truth">No ground truth matched this batch yet. Add rows to <code>data/ground_truth.csv</code> keyed by filename, then use the button below.</p>
+        <form class="rescore-form" action="/batches/{{ batch_id }}/ground-truth" method="post">
+          <button class="outline-button" type="submit">Score against ground_truth.csv</button>
+        </form>
       {% endif %}
     </section>
     {% endif %}
+
 
     <section class="result-list" id="result-list">
     {% for item in results %}

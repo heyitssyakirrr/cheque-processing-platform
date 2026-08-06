@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     # image and can be pulled toward including that shading as "foreground"
     # -- a fixed cutoff isn't swayed by what else happens to be in the crop.
     digit_ink_threshold: int = 140
+    # CSV of known-correct answers for cheques you run repeatedly, so
+    # accuracy scoring doesn't require re-pasting ground truth every batch.
+    # Columns: filename, signature_count, date (DDMMYY or "no date").
+    ground_truth_path: str = "data/ground_truth.csv"
 
     @property
     def batches_dir(self) -> Path: return self.root / "data" / "batches"

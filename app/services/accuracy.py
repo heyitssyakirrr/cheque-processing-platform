@@ -8,34 +8,37 @@ Two things get scored per cheque:
   scored as correct only if the pipeline also produced nothing usable).
 """
 
+import csv
 from pathlib import Path
 from typing import Any
 
 
-def parse_ground_truth(raw_text: str) -> dict[str, dict[str, Any]]:
-    """Parse the simple pasted format, one cheque per line:
+def load_ground_truth(path: Path) -> dict[str, dict[str, Any]]:
+    """Load ground truth from a CSV with columns: filename, signature_count, date.
 
-        <filename-stem>: <signature_count>, <date as DDMMYY or 'no date'>
-
-    e.g. "bank_cheque_1: 2, 100726" or "bank_cheque_5: 2, no date".
-    Keyed by lowercased filename stem so it matches regardless of the
-    original file's extension or case.
+    `date` should be DDMMYY, or "no date" for a cheque with no date written
+    at all. Keyed by lowercased filename stem so it matches regardless of
+    the uploaded file's extension or case. Returns an empty dict (nothing
+    scored) if the file doesn't exist yet -- there's no ground truth to
+    compare against until you create it.
     """
+    if not path.is_file():
+        return {}
+
     ground_truth: dict[str, dict[str, Any]] = {}
-    for line in raw_text.strip().splitlines():
-        line = line.strip()
-        if not line or ":" not in line:
-            continue
-        name_part, rest = line.split(":", 1)
-        pieces = [piece.strip() for piece in rest.split(",")]
-        if len(pieces) < 2 or not pieces[0].lstrip("-").isdigit():
-            continue
-        date_text = pieces[1].strip().lower()
-        date_value = None if date_text in ("no date", "none", "", "-") else "".join(filter(str.isdigit, pieces[1]))
-        ground_truth[name_part.strip().lower()] = {
-            "signature_count": int(pieces[0]),
-            "date": date_value or None,
-        }
+    with path.open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            filename = (row.get("filename") or "").strip()
+            signature_count = (row.get("signature_count") or "").strip()
+            date_raw = (row.get("date") or "").strip()
+            if not filename or not signature_count.lstrip("-").isdigit():
+                continue
+            date_text = date_raw.lower()
+            date_value = None if date_text in ("no date", "none", "", "-") else "".join(filter(str.isdigit, date_raw))
+            ground_truth[Path(filename).stem.lower()] = {
+                "signature_count": int(signature_count),
+                "date": date_value or None,
+            }
     return ground_truth
 
 
@@ -104,6 +107,17 @@ def build_accuracy_report(ground_truth: dict[str, dict[str, Any]], completed: li
         )
 
     signature_matches = sum(1 for row in rows if row["signature"]["match"])
+    total_gt_signatures = sum(row["signature"]["gt_count"] for row in rows)
+    total_predicted_signatures = sum(row["signature"]["predicted_count"] for row in rows)
+
+    # Cheques that actually have at least one signature per ground truth --
+    # "did we find *a* signature on cheques that have one" is a different,
+    # more forgiving question than "did we get the exact count right".
+    cheques_with_signatures = [row for row in rows if row["signature"]["gt_count"] > 0]
+    cheques_with_at_least_one_detected = sum(
+        1 for row in cheques_with_signatures if row["signature"]["predicted_count"] > 0
+    )
+
     scored_for_digits = [row for row in rows if row["digit"]["total_digits"] is not None]
     total_digit_correct = sum(row["digit"]["correct_digits"] for row in scored_for_digits)
     total_digit_count = sum(row["digit"]["total_digits"] for row in scored_for_digits)
@@ -114,7 +128,18 @@ def build_accuracy_report(ground_truth: dict[str, dict[str, Any]], completed: li
         "summary": {
             "cheques_scored": len(rows),
             "signature_matches": signature_matches,
-            "signature_accuracy_pct": round(signature_matches / len(rows) * 100, 1) if rows else None,
+            "total_gt_signatures": total_gt_signatures,
+            "total_predicted_signatures": total_predicted_signatures,
+            "signature_detection_rate_pct": (
+                round(total_predicted_signatures / total_gt_signatures * 100, 1) if total_gt_signatures else None
+            ),
+            "cheques_with_signatures": len(cheques_with_signatures),
+            "cheques_with_at_least_one_detected": cheques_with_at_least_one_detected,
+            "presence_detection_rate_pct": (
+                round(cheques_with_at_least_one_detected / len(cheques_with_signatures) * 100, 1)
+                if cheques_with_signatures
+                else None
+            ),
             "total_digit_correct": total_digit_correct,
             "total_digit_count": total_digit_count,
             "digit_accuracy_pct": round(total_digit_correct / total_digit_count * 100, 1) if total_digit_count else None,

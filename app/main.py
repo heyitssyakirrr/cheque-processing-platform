@@ -16,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from PIL import Image, UnidentifiedImageError
 
 from app.pipeline import process
-from app.services.accuracy import build_accuracy_report, parse_ground_truth
+from app.services.accuracy import build_accuracy_report, load_ground_truth
 from app.services.preprocessing import PreprocessOptions
 from app.settings import settings
 
@@ -182,6 +182,24 @@ def _load_accuracy_report(batch_id: str) -> dict | None:
     return json.loads(report_path.read_text(encoding="utf-8"))
 
 
+def _score_and_save_accuracy(batch_id: str, completed: list[dict]) -> None:
+    """Score a batch against data/ground_truth.csv, if it exists.
+
+    Runs automatically at the end of every batch (see _run_batch) so the
+    report is already there with zero clicks for cheques you process
+    repeatedly -- the "rescore" button exists only to re-run this after
+    you've edited the CSV, without reprocessing the images themselves.
+    """
+    ground_truth = load_ground_truth(settings.root / settings.ground_truth_path)
+    if not ground_truth:
+        return
+    report = build_accuracy_report(ground_truth, completed)
+    batch_dir = settings.batches_dir / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    (batch_dir / "accuracy_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    _write_accuracy_csv(batch_dir, report)
+
+
 def _sse(event_name: str, payload: dict) -> str:
     return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
 
@@ -234,6 +252,7 @@ async def _run_batch(
                 path.unlink(missing_ok=True)
 
         _write_batch_summary(batch_id, completed)
+        _score_and_save_accuracy(batch_id, completed)
         await queue.put(
             _sse(
                 "batch_done",
@@ -328,21 +347,16 @@ def view_batch(request: Request, batch_id: str) -> HTMLResponse:
 
 
 @app.post("/batches/{batch_id}/ground-truth")
-async def submit_ground_truth(batch_id: str, request: Request) -> RedirectResponse:
-    """Score a finished batch against pasted ground truth and save the report."""
+async def rescore_batch(batch_id: str) -> RedirectResponse:
+    """Re-run scoring for an already-finished batch -- use after editing
+    data/ground_truth.csv, without needing to reprocess any images."""
     if not ID_PATTERN.fullmatch(batch_id):
         raise HTTPException(404)
-    batch_dir = settings.batches_dir / batch_id
-    if not batch_dir.is_dir():
+    if not (settings.batches_dir / batch_id).is_dir():
         raise HTTPException(404)
 
-    form = await request.form()
-    ground_truth = parse_ground_truth(str(form.get("ground_truth", "")))
     completed = _load_batch_results(batch_id)
-    report = build_accuracy_report(ground_truth, completed)
-
-    (batch_dir / "accuracy_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    _write_accuracy_csv(batch_dir, report)
+    _score_and_save_accuracy(batch_id, completed)
 
     return RedirectResponse(url=f"/batches/{batch_id}", status_code=303)
 

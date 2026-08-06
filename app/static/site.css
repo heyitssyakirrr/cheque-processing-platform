@@ -730,6 +730,18 @@ figcaption a {
 
 .accuracy-summary {
   margin: 0 0 18px;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.summary-strip div strong {
+  display: block;
+}
+
+.summary-strip div span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .accuracy-table {
@@ -778,42 +790,20 @@ figcaption a {
   font-weight: 700;
 }
 
-.ground-truth-form {
+.rescore-form {
   margin-top: 16px;
 }
 
-.ground-truth-form summary {
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.ground-truth-form p {
-  margin: 10px 0;
+.no-ground-truth {
+  margin: 0 0 4px;
   color: var(--muted);
   font-size: 12px;
 }
 
-.ground-truth-form code {
+.no-ground-truth code {
   padding: 2px 5px;
   background: #f3f4f6;
   border-radius: 4px;
-}
-
-.ground-truth-form textarea {
-  width: 100%;
-  margin: 10px 0;
-  padding: 10px;
-  border: 1px solid #dfe1e5;
-  border-radius: 8px;
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  resize: vertical;
-}
-
-.ground-truth-form .primary-button {
-  width: auto;
-  padding: 10px 16px;
 }
 
 /* -------------------------------------------------------------------------- */
