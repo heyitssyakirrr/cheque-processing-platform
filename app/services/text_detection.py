@@ -1,12 +1,17 @@
 """PaddleOCR v2.10 text recognition with coordinate-rich output."""
 
 import csv
+import logging
 import threading
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
+
+from app.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 _ocr: Any | None = None
@@ -22,11 +27,34 @@ def _engine() -> Any:
             if _ocr is None:
                 from paddleocr import PaddleOCR
 
+                # Use the shared FileReader models/ folder instead of
+                # downloading (this environment has no internet access).
+                local_kwargs = {}
+                if settings.ocr_det_dir.exists() and settings.ocr_rec_dir.exists():
+                    local_kwargs = {
+                        "det_model_dir": str(settings.ocr_det_dir),
+                        "rec_model_dir": str(settings.ocr_rec_dir),
+                    }
+                    if settings.ocr_cls_dir.exists():
+                        local_kwargs["cls_model_dir"] = str(settings.ocr_cls_dir)
+                    else:
+                        logger.warning(
+                            "cls model not found at %s; continuing without it",
+                            settings.ocr_cls_dir,
+                        )
+                else:
+                    logger.warning(
+                        "OCR models not found at %s; PaddleOCR will attempt "
+                        "to download (will fail without internet access)",
+                        settings.ocr_det_dir.parent,
+                    )
+
                 _ocr = PaddleOCR(
                     use_angle_cls=True,
                     lang="en",
                     ocr_version="PP-OCRv4",
                     show_log=False,
+                    **local_kwargs,
                 )
     return _ocr
 

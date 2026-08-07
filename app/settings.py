@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     yolo_model_path: str = "models/signature-yolov8.torchscript"
     hf_yolo_repo_id: str = ""
     hf_yolo_filename: str = ""
+    # Absolute (or relative-to-root) path to the shared FileReader models/
+    # folder, so the PaddleOCR weights live in one place instead of being
+    # duplicated into every project that needs them. Set in .env.
+    ocr_models_dir: str = "../FileReader/models"
     signature_imgsz: int = 1280
     signature_iou: float = 0.70
     signature_logging_floor: float = 0.01
@@ -89,6 +93,18 @@ class Settings(BaseSettings):
     def batches_dir(self) -> Path: return self.root / "data" / "batches"
     @property
     def model_path(self) -> Path: return self.root / self.yolo_model_path
+
+    @property
+    def _ocr_models_base(self) -> Path:
+        p = Path(self.ocr_models_dir)
+        return p if p.is_absolute() else (self.root / p).resolve()
+
+    @property
+    def ocr_det_dir(self) -> Path: return self._ocr_models_base / "en_PP-OCRv3_det_infer"
+    @property
+    def ocr_rec_dir(self) -> Path: return self._ocr_models_base / "en_PP-OCRv3_rec_infer"
+    @property
+    def ocr_cls_dir(self) -> Path: return self._ocr_models_base / "ch_ppocr_mobile_v2.0_cls_infer"
 
 
 settings = Settings()
