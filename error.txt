@@ -1,3 +1,10 @@
-python3 -c "from app.settings import settings; print(settings.ocr_det_dir, settings.ocr_det_dir.exists())"
-python3 -c "from app.settings import settings; print(settings.ocr_rec_dir, settings.ocr_rec_dir.exists())"
-python3 -c "from app.settings import settings; print(settings.ocr_cls_dir, settings.ocr_cls_dir.exists())"
+python3 -c "
+from pathlib import Path
+import numpy as np
+from app.services.text_detection import detect
+
+# tiny blank image just to trigger a real OCR call
+img = np.zeros((100, 300, 3), dtype=np.uint8)
+result = detect(img, Path('/tmp/ocr_test'))
+print('OK:', result)
+"
