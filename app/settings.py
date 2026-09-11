@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     root: Path = Path(__file__).resolve().parents[1]
     max_upload_mb: int = 15
-    yolo_model_path: str = "models/signature-yolov8.torchscript"
+    yolo_model_path: str = "models/yolov8s.pt"
     hf_yolo_repo_id: str = ""
     hf_yolo_filename: str = ""
     # Absolute (or relative-to-root) path to the shared FileReader models/
