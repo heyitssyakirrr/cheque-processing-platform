@@ -80,7 +80,9 @@ def detect(
     If `full_image` is omitted, `image` is used for both inference and
     annotation (offset should stay (0, 0) in that case).
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    save_artifacts = settings.save_artifacts
+    if save_artifacts:
+        output_dir.mkdir(parents=True, exist_ok=True)
     offset_x, offset_y = crop_offset
     canvas = full_image if full_image is not None else image
 
@@ -97,29 +99,30 @@ def detect(
     )[0]
 
     records: list[dict[str, Any]] = []
-    annotated = canvas.copy()
     crop_dir = output_dir / "crops"
+    annotated = canvas.copy() if save_artifacts else None
 
-    # Always visible, regardless of detections -- lets you check the zone
-    # fractions in settings.py against where a signature actually sits,
-    # instead of guessing whether they're right.
-    zone_h, zone_w = image.shape[:2]
-    cv2.rectangle(
-        annotated,
-        (offset_x, offset_y),
-        (offset_x + zone_w, offset_y + zone_h),
-        (255, 140, 0),
-        2,
-    )
-    cv2.putText(
-        annotated,
-        "search zone",
-        (offset_x + 4, offset_y + 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        (255, 140, 0),
-        2,
-    )
+    if save_artifacts:
+        # Always visible, regardless of detections -- lets you check the zone
+        # fractions in settings.py against where a signature actually sits,
+        # instead of guessing whether they're right.
+        zone_h, zone_w = image.shape[:2]
+        cv2.rectangle(
+            annotated,
+            (offset_x, offset_y),
+            (offset_x + zone_w, offset_y + zone_h),
+            (255, 140, 0),
+            2,
+        )
+        cv2.putText(
+            annotated,
+            "search zone",
+            (offset_x + 4, offset_y + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 140, 0),
+            2,
+        )
 
     boxes = inference.boxes if inference.boxes is not None else []
     for index, box in enumerate(boxes, start=1):
@@ -139,6 +142,9 @@ def detect(
         }
         records.append(record)
 
+        if not save_artifacts:
+            continue
+
         color = (0, 170, 0) if accepted else (0, 140, 255)
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
         cv2.putText(
@@ -156,6 +162,7 @@ def detect(
             crop = canvas[max(0, y1):y2, max(0, x1):x2]
             cv2.imwrite(str(crop_dir / f"signature_{index}.png"), crop)
 
-    cv2.imwrite(str(output_dir / "annotated.png"), annotated)
-    _write_csv(output_dir, records)
+    if save_artifacts:
+        cv2.imwrite(str(output_dir / "annotated.png"), annotated)
+        _write_csv(output_dir, records)
     return records

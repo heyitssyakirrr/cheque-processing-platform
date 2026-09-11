@@ -185,6 +185,8 @@ def _calendar_valid(digits: str) -> bool:
 
 
 def _write_csv(output_dir: Path, result: dict[str, Any]) -> None:
+    if not settings.save_artifacts:
+        return
     with (output_dir / "result.csv").open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=result.keys())
         writer.writeheader()
@@ -193,6 +195,8 @@ def _write_csv(output_dir: Path, result: dict[str, Any]) -> None:
 
 def _write_digit_confidence_csv(output_dir: Path, top_candidates: list[list[tuple[str, float]]]) -> None:
     """One row per digit slot, with its top-3 (digit, probability) candidates."""
+    if not settings.save_artifacts:
+        return
     fieldnames = [
         "digit_index",
         "rank1_digit", "rank1_prob",
@@ -219,7 +223,8 @@ def extract(
 ) -> dict[str, Any]:
     """PaddleOCR label -> right-side crop -> grid-sliced digit CNN classification."""
     del width
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if settings.save_artifacts:
+        output_dir.mkdir(parents=True, exist_ok=True)
     tarikh, date = _find_label_lines(lines, image.shape)
     bounds_estimated = False
     if tarikh is not None or date is not None:
@@ -256,7 +261,8 @@ def extract(
         return result
 
     crop = cv2.resize(crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-    cv2.imwrite(str(output_dir / "crop.png"), crop)
+    if settings.save_artifacts:
+        cv2.imwrite(str(output_dir / "crop.png"), crop)
 
     canonical_slices = digit_segmentation.slice_digits(crop, output_dir, digit_count=settings.digit_count)
     top_candidates = digit_classifier.classify_digits(canonical_slices, top_k=3)

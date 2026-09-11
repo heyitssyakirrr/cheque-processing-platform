@@ -3,15 +3,16 @@
 import csv
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
 import cv2
 
 from app.services.date_extraction import extract as extract_date
-from app.services.field_extraction import extract as extract_fields
 from app.services.preprocessing import (
     PreprocessOptions,
+    crop_date_zone,
     crop_signature_zone,
     prepare_signature_image,
     preprocess,
@@ -38,8 +39,9 @@ def _create_run_directory(batch_id: str, sequence: int, source_name: str) -> tup
     run_id = f"{sequence:03d}-{_safe_name(source_name)}"
     run_dir = settings.batches_dir / batch_id / run_id
 
-    for name in ("original", "preprocessed", "signature", "text", "date"):
-        (run_dir / name).mkdir(parents=True, exist_ok=True)
+    if settings.save_artifacts:
+        for name in ("original", "preprocessed", "signature", "text", "date"):
+            (run_dir / name).mkdir(parents=True, exist_ok=True)
 
     return run_id, run_dir
 
@@ -52,8 +54,6 @@ def _write_summary(run_dir: Path, result: dict[str, Any]) -> None:
         "signature_count": len(result["signature"]["detections"]),
         "date": result["date"]["date"],
         "date_status": result["date"]["status"],
-        "payee_candidate": result["fields"]["payee_candidate"],
-        "amount_candidate": result["fields"]["amount_candidate"],
         "text_count": result["text"]["count"],
     }
 
@@ -74,15 +74,24 @@ def process(
 ) -> tuple[str, dict[str, Any]]:
     """Process one uploaded cheque and persist all intermediate artifacts."""
     run_id, run_dir = _create_run_directory(batch_id, sequence, source_name)
+    timings: dict[str, float] = {}
+    mark = time.perf_counter()
 
     original = cv2.imread(str(source))
     if original is None:
         raise ValueError("Unsupported or corrupt image")
+    timings["read"] = time.perf_counter() - mark
+    mark = time.perf_counter()
 
-    cv2.imwrite(str(run_dir / "original" / "cheque.png"), original)
+    save_artifacts = settings.save_artifacts
+    if save_artifacts:
+        cv2.imwrite(str(run_dir / "original" / "cheque.png"), original)
 
     preprocessed, preprocessing_metadata = preprocess(original, options)
-    cv2.imwrite(str(run_dir / "preprocessed" / "cheque.png"), preprocessed)
+    if save_artifacts:
+        cv2.imwrite(str(run_dir / "preprocessed" / "cheque.png"), preprocessed)
+    timings["preprocess"] = time.perf_counter() - mark
+    mark = time.perf_counter()
 
     signature_image, signature_scale = prepare_signature_image(original, options)
     preprocessing_metadata["signature_scale"] = round(signature_scale, 4)
@@ -95,14 +104,27 @@ def process(
         crop_offset=signature_offset,
         full_image=signature_image,
     )
-    text_lines = detect_text(preprocessed, run_dir / "text")
+    timings["signature"] = time.perf_counter() - mark
+    mark = time.perf_counter()
+
+    if settings.date_use_template_zone:
+        # extract_date falls back to fixed template geometry when no labels
+        # are supplied, so the OCR stage can be skipped outright.
+        text_lines = []
+    else:
+        ocr_zone, (ocr_x, ocr_y) = crop_date_zone(preprocessed)
+        text_lines = detect_text(ocr_zone, run_dir / "text")
+        for line in text_lines:
+            line["box"] = [[x + ocr_x, y + ocr_y] for x, y in line["box"]]
+    timings["ocr"] = time.perf_counter() - mark
+    mark = time.perf_counter()
     date_result = extract_date(
         preprocessed,
         text_lines,
         run_dir / "date",
         width=date_width,
     )
-    field_result = extract_fields(text_lines)
+    timings["date"] = time.perf_counter() - mark
 
     result: dict[str, Any] = {
         "run_id": run_id,
@@ -110,6 +132,8 @@ def process(
         "sequence": sequence,
         "source_filename": source_name,
         "preprocessing": preprocessing_metadata,
+        "pixels": f"{original.shape[1]}x{original.shape[0]}",
+        "timings": {name: round(value, 2) for name, value in timings.items()},
         "signature": {
             "exists": any(item["accepted"] for item in signature_detections),
             "detections": signature_detections,
@@ -119,12 +143,12 @@ def process(
             "detections": text_lines,
         },
         "date": date_result,
-        "fields": field_result,
     }
 
-    (run_dir / "result.json").write_text(
-        json.dumps(result, indent=2),
-        encoding="utf-8",
-    )
-    _write_summary(run_dir, result)
+    if save_artifacts:
+        (run_dir / "result.json").write_text(
+            json.dumps(result, indent=2),
+            encoding="utf-8",
+        )
+        _write_summary(run_dir, result)
     return run_id, result

@@ -59,24 +59,30 @@ def _label_to_digit(index: int) -> str:
     return label.split("_")[-1] if label.upper().startswith("LABEL_") else label
 
 
-def _predict_transformers(canonical: np.ndarray, top_k: int) -> list[tuple[str, float]]:
-    image = Image.fromarray(canonical).convert("RGB")
-    inputs = _processor(images=image, return_tensors="pt")
+def _top_k_rows(probs: torch.Tensor, top_k: int, to_digit) -> list[list[tuple[str, float]]]:
+    values, indices = torch.topk(probs, k=min(top_k, probs.shape[1]), dim=1)
+    return [
+        [(to_digit(int(index)), float(value)) for value, index in zip(value_row, index_row)]
+        for value_row, index_row in zip(values.tolist(), indices.tolist())
+    ]
+
+
+def _predict_transformers(canonicals: list[np.ndarray], top_k: int) -> list[list[tuple[str, float]]]:
+    images = [Image.fromarray(canonical).convert("RGB") for canonical in canonicals]
+    inputs = _processor(images=images, return_tensors="pt")
     with torch.inference_mode():
-        probs = torch.softmax(_model(**inputs).logits, dim=1).squeeze()
-    values, indices = torch.topk(probs, k=min(top_k, probs.numel()))
-    return [(_label_to_digit(int(index)), float(value)) for value, index in zip(values.tolist(), indices.tolist())]
+        probs = torch.softmax(_model(**inputs).logits, dim=1)
+    return _top_k_rows(probs, top_k, _label_to_digit)
 
 
-def _predict_torch_pickle(canonical: np.ndarray, top_k: int) -> list[tuple[str, float]]:
-    resized = np.array(Image.fromarray(canonical).resize((28, 28)))
+def _predict_torch_pickle(canonicals: list[np.ndarray], top_k: int) -> list[list[tuple[str, float]]]:
+    resized = np.stack([np.array(Image.fromarray(c).resize((28, 28))) for c in canonicals])
     tensor = torch.from_numpy(resized).float().div(255)
     tensor = (tensor - _MNIST_MEAN) / _MNIST_STD
-    tensor = tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, 28, 28)
+    tensor = tensor.unsqueeze(1)  # (N, 1, 28, 28)
     with torch.inference_mode():
-        probs = torch.softmax(_model(tensor), dim=1).squeeze()
-    values, indices = torch.topk(probs, k=min(top_k, probs.numel()))
-    return [(str(int(index)), float(value)) for value, index in zip(values.tolist(), indices.tolist())]
+        probs = torch.softmax(_model(tensor), dim=1)
+    return _top_k_rows(probs, top_k, str)
 
 
 def classify_digits(canonical_slices: list[np.ndarray], top_k: int = 3) -> list[list[tuple[str, float]]]:
@@ -85,7 +91,12 @@ def classify_digits(canonical_slices: list[np.ndarray], top_k: int = 3) -> list[
     predictions[i][0] is the chosen digit for that slot; the rest are for
     inspection (e.g. reviewing digit_confidence.csv to eventually decide a
     min-confidence cutoff for rejecting a blank/no-date field).
+
+    Every slice goes through the model as one batch -- six separate
+    batch-size-1 forward passes dominated the date path's cost.
     """
     _load()
+    if not canonical_slices:
+        return []
     predict = _predict_transformers if settings.digit_model_backend == "transformers" else _predict_torch_pickle
-    return [predict(digit_image, top_k) for digit_image in canonical_slices]
+    return predict(canonical_slices, top_k)

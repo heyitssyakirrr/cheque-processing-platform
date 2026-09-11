@@ -26,6 +26,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from app.settings import settings
+
 
 def _binarize(gray: np.ndarray) -> np.ndarray:
     """Otsu-threshold once; ink -> 255, background -> 0."""
@@ -203,8 +205,10 @@ def slice_digits(
     gray = cv2.cvtColor(date_crop, cv2.COLOR_BGR2GRAY) if date_crop.ndim == 3 else date_crop
     binary = _binarize(gray)
 
+    save_artifacts = settings.save_artifacts
     digits_dir = output_dir / "digits"
-    digits_dir.mkdir(parents=True, exist_ok=True)
+    if save_artifacts:
+        digits_dir.mkdir(parents=True, exist_ok=True)
 
     # Stage 1: isolate the handwritten digit row, then trim to its ink
     # bounding box so crop margin can never distort lane math downstream.
@@ -217,8 +221,9 @@ def slice_digits(
     xs = np.nonzero(row.sum(axis=0))[0]
     if len(xs) == 0:
         canonical_slices = [np.zeros((128, 128), dtype=np.uint8) for _ in range(digit_count)]
-        for i, canonical in enumerate(canonical_slices):
-            cv2.imwrite(str(digits_dir / f"digit_{i}.png"), canonical)
+        if save_artifacts:
+            for i, canonical in enumerate(canonical_slices):
+                cv2.imwrite(str(digits_dir / f"digit_{i}.png"), canonical)
         return canonical_slices
 
     left, right = int(xs.min()), int(xs.max()) + 1
@@ -233,7 +238,8 @@ def slice_digits(
     for i, (x0, x1) in enumerate(clusters):
         lane = row[:, x0:x1]
         canonical = _normalize_digit(lane)
-        cv2.imwrite(str(digits_dir / f"digit_{i}.png"), canonical)
+        if save_artifacts:
+            cv2.imwrite(str(digits_dir / f"digit_{i}.png"), canonical)
         canonical_slices.append(canonical)
 
     return canonical_slices

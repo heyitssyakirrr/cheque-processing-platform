@@ -35,7 +35,6 @@ BATCH_SUMMARY_FIELDS = [
     "sequence", "filename", "run_id",
     "signature_detected", "signature_confidence",
     "date", "date_status", "date_confidence", "raw_digits", "date_validation",
-    "payee_candidate", "amount_candidate",
     "text_region_count", "preprocessing_scale", "preprocessing_deskew_degrees",
 ]
 
@@ -116,8 +115,6 @@ def _batch_summary_row(item: dict) -> dict:
         "date_confidence": result["date"]["confidence"],
         "raw_digits": result["date"]["raw_digits"],
         "date_validation": result["date"]["validation"],
-        "payee_candidate": result["fields"]["payee_candidate"],
-        "amount_candidate": result["fields"]["amount_candidate"],
         "text_region_count": result["text"]["count"],
         "preprocessing_scale": result["preprocessing"]["scale"],
         "preprocessing_deskew_degrees": result["preprocessing"]["deskew_degrees"],

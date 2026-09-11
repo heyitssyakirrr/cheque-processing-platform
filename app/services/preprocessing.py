@@ -123,6 +123,24 @@ def prepare_signature_image(
     return cv2.resize(image_bgr, None, fx=scale, fy=scale, interpolation=interpolation), float(scale)
 
 
+def crop_date_zone(image_bgr: np.ndarray) -> tuple[np.ndarray, tuple[int, int]]:
+    """Crop to the corner holding the printed TARIKH/DATE labels before OCR.
+
+    OCR cost scales with pixel count, and the labels only ever appear in the
+    upper right of this template, so scanning the whole page to find them is
+    the single most expensive avoidable step in the pipeline.
+
+    Returns (cropped_image, (x_offset, y_offset)) so the detected boxes can be
+    translated back into the full image's coordinate frame, leaving all
+    downstream date geometry working in unchanged coordinates.
+    """
+    height, width = image_bgr.shape[:2]
+    x0 = int(width * settings.ocr_zone_left_fraction)
+    y0 = int(height * settings.ocr_zone_top_fraction)
+    y1 = int(height * settings.ocr_zone_bottom_fraction)
+    return image_bgr[y0:y1, x0:width], (x0, y0)
+
+
 def crop_signature_zone(image_bgr: np.ndarray) -> tuple[np.ndarray, tuple[int, int]]:
     """Crop to the region a signature reliably occupies on this cheque
     template, before running YOLO -- entirely separate from resolution/

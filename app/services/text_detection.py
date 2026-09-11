@@ -49,6 +49,11 @@ def _engine() -> Any:
                         settings.ocr_det_dir.parent,
                     )
 
+                # Paddle defaults this to 10 and ignores OMP_NUM_THREADS, so
+                # it needs telling separately.
+                if settings.threads_per_worker:
+                    local_kwargs["cpu_threads"] = settings.threads_per_worker
+
                 _ocr = PaddleOCR(
                     use_angle_cls=True,
                     lang="en",
@@ -81,13 +86,15 @@ def _write_csv(output_dir: Path, records: list[dict[str, Any]]) -> None:
 
 def detect(image: np.ndarray, output_dir: Path) -> list[dict[str, Any]]:
     """Run OCR, annotate every text box, and return structured line data."""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    save_artifacts = settings.save_artifacts
+    if save_artifacts:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     raw_result = _engine().ocr(image, cls=True)
     raw_lines = raw_result[0] if raw_result and raw_result[0] else []
 
     records: list[dict[str, Any]] = []
-    annotated = image.copy()
+    annotated = image.copy() if save_artifacts else None
 
     for index, (box, text_pair) in enumerate(raw_lines, start=1):
         text, confidence = text_pair
@@ -99,6 +106,9 @@ def detect(image: np.ndarray, output_dir: Path) -> list[dict[str, Any]]:
             "box": points,
         }
         records.append(record)
+
+        if not save_artifacts:
+            continue
 
         contour = np.array(points, dtype=np.int32)
         cv2.polylines(annotated, [contour], True, (0, 0, 220), 2)
@@ -115,6 +125,7 @@ def detect(image: np.ndarray, output_dir: Path) -> list[dict[str, Any]]:
             cv2.LINE_AA,
         )
 
-    cv2.imwrite(str(output_dir / "annotated.png"), annotated)
-    _write_csv(output_dir, records)
+    if save_artifacts:
+        cv2.imwrite(str(output_dir / "annotated.png"), annotated)
+        _write_csv(output_dir, records)
     return records
