@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ROOT / ".env", extra="ignore")
     root: Path = _ROOT
     max_upload_mb: int = 15
-    yolo_model_path: str = "models/yolov8s_2.pt"
+    yolo_model_path: str = "models/yolov8s.pt"
     hf_yolo_repo_id: str = ""
     hf_yolo_filename: str = ""
     # Absolute (or relative-to-root) path to the shared FileReader models/
