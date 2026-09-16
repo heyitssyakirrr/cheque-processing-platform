@@ -104,6 +104,15 @@ class Settings(BaseSettings):
     # Folder scanned for cheque images, and the single results file.
     upload_dir_name: str = "Upload"
     output_csv_name: str = "output.csv"
+    # Batch ZIP ingestion. Local mode is deliberately the default so the
+    # exact production code path can be tested on a laptop without SFTP.
+    incoming_transport: str = "local"
+    incoming_root: str = "data/incoming"
+    batch_zip_name_pattern: str = "{date}_cheques.zip"
+    staging_dir_name: str = "data/staging"
+    max_attempts: int = 3
+    cleanup_zip_after_batch: bool = True
+    batch_inflight_multiplier: int = 2
     # These replace the sliders the removed web form used to supply.
     preprocess_max_long_edge: int = 3000
     preprocess_contrast: float = 1.15
@@ -115,7 +124,7 @@ class Settings(BaseSettings):
     # Per-cheque annotated images, crops, digit slices, CSVs and result.json.
     # Roughly 20 files per cheque, so this is left off for production volume
     # and turned on when investigating a specific batch.
-    save_artifacts: bool = False
+    save_artifacts: bool = True
     # Region OCR is restricted to when locating the TARIKH/DATE labels.
     # Deliberately wider than _template_date_zone (0.60-0.99 x, 0.10-0.38 y)
     # so the printed labels and enough neighbouring lines stay in frame for
@@ -155,6 +164,12 @@ class Settings(BaseSettings):
             raise ValueError("reserved_logical_cores must be >= 0")
         if self.max_worker_cap < 0:
             raise ValueError("max_worker_cap must be >= 0")
+        if self.incoming_transport != "local":
+            raise ValueError("Only incoming_transport='local' is implemented; add SFTP after its details are confirmed")
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
+        if self.batch_inflight_multiplier < 1:
+            raise ValueError("batch_inflight_multiplier must be >= 1")
         return self
 
     def recommend_workers(self, logical_cores: int, task_count: int) -> int:
@@ -177,6 +192,18 @@ class Settings(BaseSettings):
     def upload_dir(self) -> Path: return self.root / self.upload_dir_name
     @property
     def output_csv(self) -> Path: return self.root / self.output_csv_name
+
+    @property
+    def incoming_dir(self) -> Path:
+        value = Path(self.incoming_root)
+        return value if value.is_absolute() else self.root / value
+
+    @property
+    def staging_dir(self) -> Path: return self.root / self.staging_dir_name
+
+    def batch_dir(self, batch_id: str) -> Path: return self.batches_dir / batch_id
+
+    def batch_zip_path(self, batch_id: str) -> Path: return self.staging_dir / f"{batch_id}_cheques.zip"
 
     @property
     def batches_dir(self) -> Path: return self.root / "data" / "batches"

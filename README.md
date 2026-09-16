@@ -52,6 +52,24 @@ summary.csv
 
 `result.json` is the complete machine-readable record. CSVs are intentionally split by task so they can be inspected in Excel without parsing nested data.
 
+## Resumable daily ZIP batch
+
+For a laptop test, copy a ZIP named `YYYYMMDD_cheques.zip` to
+`data/incoming/`.  It must contain `.img` files beneath `PBB/` and/or `PIBB/`.
+The runner streams each ZIP member, converts frame zero to a temporary JPEG,
+and deletes that JPEG immediately:
+
+```powershell
+python run.py --batch-id 20260916
+```
+
+The live result file is `data/batches/20260916/20260916_output.csv`; a row is
+appended as each cheque completes. `manifest.db` is the source of truth, so a
+rerun resumes unfinished work and repairs the CSV if a crash made its last
+append ambiguous. `20260916_failed.csv` lists scans that exhaust
+`MAX_ATTEMPTS` (default: 3). Start with `WORKER_COUNT=1` on a laptop; increase
+it only after measuring memory and throughput on the target machine.
+
 ## Code layout
 
 ```

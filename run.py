@@ -1,97 +1,40 @@
-"""Process every cheque image in Upload/ and write output.csv.
+"""Resumable ZIP batch runner.
 
-Replaces the removed web app: run it directly, no server, no browser.
-
-Total work per cheque is fixed, so worker_count and threads_per_worker only
-divide the same cores up differently. worker_count=1 with
-threads_per_worker=0 reproduces the original single-image-on-all-cores run.
-
-Per-image evidence (annotated signature, date crop, digit slices) is only
-written under data/batches/<run timestamp>/ when settings.save_artifacts is
-on -- it costs roughly 20 file writes per cheque.
+Usage on a laptop: put ``20260916_cheques.zip`` in ``data/incoming`` and run
+``python run.py --batch-id 20260916``.  The live output is written to
+``data/batches/20260916/20260916_output.csv``.
 """
 
-import os
+from __future__ import annotations
 
-# Importing settings is cheap and pulls in no native library, so it can
-# safely precede the thread-count environment variables below.
+import argparse
+import json
+import os
+import sys
+import time
+import uuid
+import zipfile
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from datetime import datetime
+from pathlib import Path
+
 from app.settings import settings
 
-# OpenMP, MKL and OpenBLAS read these once, when the native library first
-# loads, so they must be set before cv2/torch/paddle are imported.
 if settings.threads_per_worker:
-    for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        os.environ.setdefault(_var, str(settings.threads_per_worker))
-
-import csv  # noqa: E402
-import sys  # noqa: E402
-import time  # noqa: E402
-from concurrent.futures import ProcessPoolExecutor  # noqa: E402
-from datetime import datetime  # noqa: E402
-from pathlib import Path  # noqa: E402
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(name, str(settings.threads_per_worker))
 
 import torch  # noqa: E402
 
+from app.ingestion import batch_lock, inventory_zip, sha256_file, stage_local_zip  # noqa: E402
+from app.manifest import Manifest  # noqa: E402
 from app.pipeline import process  # noqa: E402
 from app.services import digit_classifier, signature_detection, text_detection  # noqa: E402
+from app.services.img_conversion import convert_img_bytes_to_jpg  # noqa: E402
 from app.services.preprocessing import PreprocessOptions  # noqa: E402
-
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
-
-TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
-
-OUTPUT_FIELDS = [
-    "filename",
-    "signature_detected",
-    "date",
-    "start_time",
-    "end_time",
-    "duration_seconds",
-    "pixels",
-    "t_read",
-    "t_preprocess",
-    "t_signature",
-    "t_ocr",
-    "t_date",
-    "error",
-]
-
-
-def _row(
-    filename: str,
-    started: datetime,
-    elapsed: float,
-    signature_detected: str = "",
-    date: str = "",
-    error: str = "",
-    pixels: str = "",
-    timings: dict | None = None,
-) -> dict:
-    timings = timings or {}
-    return {
-        "filename": filename,
-        "signature_detected": signature_detected,
-        "date": date,
-        "start_time": started.strftime(TIMESTAMP_FORMAT),
-        "end_time": datetime.now().strftime(TIMESTAMP_FORMAT),
-        "duration_seconds": round(elapsed, 2),
-        "pixels": pixels,
-        "t_read": timings.get("read", ""),
-        "t_preprocess": timings.get("preprocess", ""),
-        "t_signature": timings.get("signature", ""),
-        "t_ocr": timings.get("ocr", ""),
-        "t_date": timings.get("date", ""),
-        "error": error,
-    }
 
 
 def _warm_up() -> float:
-    """Load YOLO, PaddleOCR and the digit model once, up front.
-
-    Each service caches its model in a module-level singleton, so the first
-    cheque would otherwise absorb all three load times. Call this once at
-    startup -- an API should do the same before accepting requests.
-    """
     started = time.perf_counter()
     signature_detection._model_instance()
     if not settings.date_use_template_zone:
@@ -101,148 +44,170 @@ def _warm_up() -> float:
 
 
 def _init_worker() -> None:
-    """Run once per worker process, before it takes any image."""
     import cv2
-    import torch
-
     if settings.threads_per_worker:
         cv2.setNumThreads(settings.threads_per_worker)
         torch.set_num_threads(settings.threads_per_worker)
     _warm_up()
 
 
-def _limit_cpus(count: int) -> int:
-    """Confine this process and its children to `count` CPUs.
-
-    Thread-count settings are per-library and easy to miss one of; affinity is
-    enforced by the kernel, so nothing in the tree can exceed it. Linux only.
-
-    Returns the number of CPUs actually usable afterwards.
-    """
-    if not hasattr(os, "sched_setaffinity"):
-        return os.cpu_count() or 1
-    available = sorted(os.sched_getaffinity(0))
-    if count >= len(available):
-        return len(available)
-    os.sched_setaffinity(0, set(available[:count]))
-    return count
+def _completion_path(directory: Path, cheque_id: str) -> Path:
+    import hashlib
+    return directory / f"{hashlib.sha256(cheque_id.encode()).hexdigest()}.json"
 
 
-def _resolve_worker_count(task_count: int) -> tuple[int, int, int]:
-    """Return (workers, logical_cores_seen, affinity_cores_seen)."""
-    logical_cores = os.cpu_count() or 1
-    requested_workers = settings.recommend_workers(logical_cores, task_count)
-    affinity_cores = _limit_cpus(requested_workers)
-    workers = min(requested_workers, affinity_cores, task_count)
-    return workers, logical_cores, affinity_cores
+def _atomic_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    with temporary.open("w", encoding="utf-8") as file:
+        json.dump(value, file, separators=(",", ":"))
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary, path)
 
 
-def _process_one(task: tuple[int, Path, PreprocessOptions, str]) -> dict:
-    """Handle a single cheque and return its output.csv row."""
-    sequence, image_path, options, batch_id = task
+def _process_one(task: dict) -> dict:
+    """Worker function: success is made durable before the parent sees it."""
     started, counter = datetime.now(), time.perf_counter()
+    jpeg = Path(task["tmp_dir"]) / f"{uuid.uuid4().hex}.jpg"
     try:
-        _run_id, result = process(
-            image_path,
-            options,
-            settings.signature_decision_threshold,
-            450,
-            batch_id,
-            sequence,
-            image_path.name,
-        )
-        return _row(
-            image_path.name,
-            started,
-            time.perf_counter() - counter,
-            signature_detected="YES" if result["signature"]["exists"] else "NO",
-            date=result["date"]["date"],
-            pixels=result.get("pixels", ""),
-            timings=result.get("timings"),
-        )
-    except Exception as error:  # noqa: BLE001 -- one bad image shouldn't abort the rest
-        return _row(image_path.name, started, time.perf_counter() - counter, error=str(error))
-
-
-def main() -> int:
-    upload_dir = settings.upload_dir
-    if not upload_dir.is_dir():
-        print(f"Upload folder not found: {upload_dir}", file=sys.stderr)
-        return 1
-
-    images = sorted(
-        path for path in upload_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
-    )
-    if not images:
-        print(f"No images found in {upload_dir}", file=sys.stderr)
-        return 1
-
-    options = PreprocessOptions(
-        max_long_edge=settings.preprocess_max_long_edge,
-        contrast=settings.preprocess_contrast,
-        denoise=settings.preprocess_denoise,
-        deskew=settings.preprocess_deskew,
-    )
-    batch_id = f"{datetime.now():%Y%m%d-%H%M%S}"
-    tasks = [(sequence, path, options, batch_id) for sequence, path in enumerate(images, start=1)]
-
-    workers, logical_cores, cores = _resolve_worker_count(len(tasks))
-    if workers > cores:
-        print(
-            f"WORKER_COUNT={workers} exceeds the {cores} usable cores; "
-            f"capping to {cores}. Oversubscribing makes every image slower.",
-            file=sys.stderr,
-        )
-    print(
-        f"{len(tasks)} images | {logical_cores} logical cores detected "
-        f"| {cores} usable cores | {workers} workers "
-        f"| {torch.get_num_threads()} torch threads each",
-        flush=True,
-    )
-    if settings.worker_count == 0:
-        print(
-            "Worker auto mode: "
-            f"utilization_target={settings.worker_utilization_target:.2f}, "
-            f"reserved_logical_cores={settings.reserved_logical_cores}, "
-            f"max_worker_cap={settings.max_worker_cap}",
-            flush=True,
-        )
-
-    started_at = time.perf_counter()
-    rows: list[dict] = []
-
-    if workers == 1:
-        print("Warming up models...", flush=True)
-        print(f"Models ready in {_warm_up():.2f}s\n", flush=True)
-        results = map(_process_one, tasks)
-    else:
-        print(f"Starting {workers} workers (models load in each)...", flush=True)
-        executor = ProcessPoolExecutor(max_workers=workers, initializer=_init_worker)
-        # map keeps submission order, so rows stay aligned with `images`.
-        results = executor.map(_process_one, tasks, chunksize=1)
-
-    try:
-        for done, row in enumerate(results, start=1):
-            status = row["error"] or row["signature_detected"]
-            print(f"[{done}/{len(tasks)}] {row['filename']} -> {status}", flush=True)
-            rows.append(row)
+        with zipfile.ZipFile(task["zip_path"]) as archive:
+            raw = archive.read(task["zip_member"])
+        convert_img_bytes_to_jpg(raw, jpeg)
+        _, result = process(jpeg, task["options"], settings.signature_decision_threshold, 450,
+                            task["batch_id"], task["sequence"], Path(task["zip_member"]).name)
+        timings = result.get("timings", {})
+        row = {
+            "batch_id": task["batch_id"], "cheque_id": task["cheque_id"], "bank_code": task["bank_code"],
+            "sequence": task["sequence"], "filename": Path(task["zip_member"]).name,
+            "signature_detected": "YES" if result["signature"]["exists"] else "NO",
+            "date": result["date"]["date"], "start_time": started.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "duration_seconds": round(time.perf_counter() - counter, 2), "pixels": result.get("pixels", ""),
+            "t_read": timings.get("read", ""), "t_preprocess": timings.get("preprocess", ""),
+            "t_signature": timings.get("signature", ""), "t_ocr": timings.get("ocr", ""),
+            "t_date": timings.get("date", ""), "error": "",
+        }
+        _atomic_json(_completion_path(Path(task["completion_dir"]), task["cheque_id"]), row)
+        return {"cheque_id": task["cheque_id"], "ok": True}
+    except Exception as error:  # A bad scan must not end the whole batch.
+        return {"cheque_id": task["cheque_id"], "ok": False, "error": str(error)}
     finally:
-        if workers > 1:
-            executor.shutdown()
+        jpeg.unlink(missing_ok=True)
 
-    with settings.output_csv.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=OUTPUT_FIELDS)
-        writer.writeheader()
-        writer.writerows(rows)
 
-    wall = time.perf_counter() - started_at
-    failed = sum(1 for row in rows if row["error"])
-    print(f"\nWrote {settings.output_csv} ({len(rows)} rows, {failed} failed)")
-    print(f"Wall clock {wall:.1f}s -- {len(rows) / wall:.2f} cheques/sec")
-    if settings.save_artifacts:
-        print(f"Evidence: {settings.batches_dir / batch_id}")
-    return 1 if failed == len(rows) else 0
+def _import_completions(manifest: Manifest, directory: Path, output_csv: Path) -> int:
+    imported = 0
+    for path in directory.glob("*.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+            manifest.mark_done(row["cheque_id"], row)
+            manifest.append_output(output_csv, row["cheque_id"])
+            imported += 1
+        except (OSError, ValueError, KeyError) as error:
+            raise RuntimeError(f"Invalid completion record {path}: {error}") from error
+    return imported
+
+
+def _task(row, batch_id: str, zip_path: Path, options: PreprocessOptions, tmp_dir: Path, completion_dir: Path) -> dict:
+    return {"cheque_id": row["cheque_id"], "bank_code": row["bank_code"], "zip_member": row["zip_member"],
+            "sequence": row["sequence"], "batch_id": batch_id, "zip_path": str(zip_path), "options": options,
+            "tmp_dir": str(tmp_dir), "completion_dir": str(completion_dir)}
+
+
+def _handle_result(manifest: Manifest, result: dict, completion_dir: Path, output_csv: Path) -> None:
+    cheque_id = result["cheque_id"]
+    if result["ok"]:
+        row = json.loads(_completion_path(completion_dir, cheque_id).read_text(encoding="utf-8"))
+        manifest.mark_done(cheque_id, row)
+        manifest.append_output(output_csv, cheque_id)
+    else:
+        manifest.mark_failure(cheque_id, result["error"])
+
+
+def _run_tasks(manifest: Manifest, tasks: list[dict], workers: int, completion_dir: Path, output_csv: Path) -> None:
+    if not tasks:
+        return
+    if workers == 1:
+        print(f"Warming up models... ({_warm_up():.2f}s)", flush=True)
+        for index, task in enumerate(tasks, 1):
+            manifest.mark_in_progress(task["cheque_id"])
+            result = _process_one(task)
+            _handle_result(manifest, result, completion_dir, output_csv)
+            print(f"[{index}/{len(tasks)}] {task['zip_member']} -> {'DONE' if result['ok'] else 'FAILED'}", flush=True)
+        return
+
+    capacity, iterator, completed = workers * settings.batch_inflight_multiplier, iter(tasks), 0
+    with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker) as executor:
+        pending = {}
+        def submit() -> bool:
+            try:
+                task = next(iterator)
+            except StopIteration:
+                return False
+            manifest.mark_in_progress(task["cheque_id"])
+            pending[executor.submit(_process_one, task)] = task
+            return True
+        while len(pending) < capacity and submit():
+            pass
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                task = pending.pop(future)
+                try:
+                    result = future.result()
+                except Exception as error:
+                    result = {"cheque_id": task["cheque_id"], "ok": False, "error": str(error)}
+                _handle_result(manifest, result, completion_dir, output_csv)
+                completed += 1
+                print(f"[{completed}/{len(tasks)}] {task['zip_member']} -> {'DONE' if result['ok'] else 'FAILED'}", flush=True)
+                submit()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Process one daily cheque ZIP resumably.")
+    parser.add_argument("--batch-id", default=f"{datetime.now():%Y%m%d}", help="Date in YYYYMMDD form")
+    args = parser.parse_args(argv)
+    batch_id = args.batch_id
+    if not (len(batch_id) == 8 and batch_id.isdigit()):
+        parser.error("--batch-id must be YYYYMMDD")
+    source_zip = settings.incoming_dir / settings.batch_zip_name_pattern.format(date=batch_id)
+    batch_dir, completion_dir, tmp_dir = settings.batch_dir(batch_id), settings.batch_dir(batch_id) / "completion", settings.batch_dir(batch_id) / "tmp"
+    output_csv, failed_csv = batch_dir / f"{batch_id}_output.csv", batch_dir / f"{batch_id}_failed.csv"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    with batch_lock(batch_dir / ".lock"):
+        for leftover in tmp_dir.glob("*.jpg"):
+            leftover.unlink(missing_ok=True)
+        zip_path = stage_local_zip(source_zip, settings.batch_zip_path(batch_id))
+        inventory = inventory_zip(zip_path)
+        if not inventory:
+            raise RuntimeError("ZIP contains no .img files under PBB/ or PIBB/")
+        manifest = Manifest(batch_dir / "manifest.db", batch_id, sha256_file(zip_path), settings.max_attempts)
+        try:
+            manifest.seed(inventory)
+            manifest.recover_interrupted()
+            manifest.rebuild_output(output_csv)  # repairs crash ambiguity before new appends
+            recovered = _import_completions(manifest, completion_dir, output_csv)
+            todo = manifest.todo()
+            workers = min(settings.recommend_workers(os.cpu_count() or 1, len(todo)), len(todo)) if todo else 1
+            print(f"Batch {batch_id}: {len(inventory)} cheques; {len(todo)} to process; {workers} worker(s).", flush=True)
+            if recovered:
+                print(f"Recovered {recovered} durable completion(s).", flush=True)
+            options = PreprocessOptions(
+                max_long_edge=settings.preprocess_max_long_edge,
+                contrast=settings.preprocess_contrast,
+                denoise=settings.preprocess_denoise,
+                deskew=settings.preprocess_deskew,
+            )
+            _run_tasks(manifest, [_task(row, batch_id, zip_path, options, tmp_dir, completion_dir) for row in todo], workers, completion_dir, output_csv)
+            manifest.write_failures(failed_csv)
+            counts = manifest.counts()
+            print(f"Output: {output_csv}\nStatus: {counts}", flush=True)
+            if not manifest.todo() and not manifest.failures() and settings.cleanup_zip_after_batch:
+                zip_path.unlink(missing_ok=True)
+            return 1 if manifest.todo() else (2 if manifest.failures() else 0)
+        finally:
+            manifest.close()
 
 
 if __name__ == "__main__":

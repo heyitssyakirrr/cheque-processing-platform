@@ -2,6 +2,7 @@
 
 import csv
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -146,9 +147,12 @@ def process(
     }
 
     if save_artifacts:
-        (run_dir / "result.json").write_text(
+        result_path = run_dir / "result.json"
+        temporary_result_path = result_path.with_suffix(".json.tmp")
+        temporary_result_path.write_text(
             json.dumps(result, indent=2),
             encoding="utf-8",
         )
+        os.replace(temporary_result_path, result_path)
         _write_summary(run_dir, result)
     return run_id, result

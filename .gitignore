@@ -7,3 +7,4 @@ models/
 Output/
 Upload/
 output.csv
+*.part
