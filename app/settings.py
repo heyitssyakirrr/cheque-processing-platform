@@ -1,8 +1,7 @@
 """Application configuration.
 
-One flat, validated settings object, loaded from `.env` (see `.env.example`
-for the full list of overridable keys). Fields are grouped below by which
-part of the pipeline they configure:
+One flat, validated settings object, loaded from `.env`. 
+Fields are grouped below by which part of the pipeline they configure:
 
     1. Paths & environment          -- where things live on disk
     2. Signature detection (YOLO)   -- app/services/signature_detection.py
@@ -14,8 +13,7 @@ part of the pipeline they configure:
     8. Worker process sizing        -- run.py's ProcessPoolExecutor
 
 Every field can be overridden by an environment variable of the same name
-(case-insensitive), or by editing `.env`. See `.env.example` for a laptop-safe
-starting point.
+(case-insensitive), or by editing `.env`. 
 """
 
 import math
