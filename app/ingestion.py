@@ -85,25 +85,39 @@ def inventory_zip(path: Path) -> list[InventoryItem]:
 
 @contextmanager
 def batch_lock(path: Path):
-    """Prevent two manual/scheduler processes from owning one batch on Windows."""
-    import msvcrt
-
+    """Prevent two manual/scheduler processes from owning one batch."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+b")
     try:
-        if path.stat().st_size == 0:
-            handle.write(b"0")
-            handle.flush()
-        handle.seek(0)
-        try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError as error:
-            raise RuntimeError(f"Batch is already running (lock: {path})") from error
-        yield
-    finally:
-        try:
+        if os.name == "nt":
+            import msvcrt
+
+            if path.stat().st_size == 0:
+                handle.write(b"0")
+                handle.flush()
             handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                raise RuntimeError(f"Batch is already running (lock: {path})") from error
+            try:
+                yield
+            finally:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                raise RuntimeError(f"Batch is already running (lock: {path})") from error
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
         handle.close()
