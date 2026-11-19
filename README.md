@@ -599,6 +599,16 @@ Because the batch ID defaults to today's date, no arguments are needed. Have the
 
 Begin with `WORKER_COUNT=1` on a laptop and increase only after measuring memory and throughput on the target machine. With one worker the runner processes in-process (no process pool), which is also the easiest mode to debug.
 
+### SVDWH008 copy (branch `uat-008`)
+
+On SVDWH008 the project is `/pythonITD/dwh_312/Cheque_Processing`, next to `TransactionODD` and `FileReader`, and is imported as a package from `dwh_312`, so its imports read `from Cheque_Processing.app.settings import ...`. `main` keeps the plain `app.` imports. After committing on `main`, run:
+
+```powershell
+python tools/build_uat_branch.py
+```
+
+It rebuilds `uat-008` from the last commit with the `Cheque_Processing.` prefix on every project import (plus a `sys.path` line in `run.py` so `python Cheque_Processing/run.py` works from `dwh_312`), checks that every prefixed import resolves, and force-pushes it. Copy files to SVDWH008 from `uat-008` as they are. Never edit `uat-008` by hand; `--no-push` builds and checks without pushing.
+
 ---
 
 ## 📡 Web Routes Reference
@@ -889,7 +899,6 @@ flowchart TD
 
 ## ⚠️ Known Limitations
 
-- **Batch locking is Windows-only.** `ingestion.batch_lock` uses `msvcrt`, so `run.py` currently runs on Windows only. Linux support needs a `fcntl`-based lock.
 - **SFTP is not implemented.** `INCOMING_TRANSPORT` accepts only `local`; the validator rejects anything else so the gap is never silent.
 - **A date is always read as six digits.** The classifier is forced to output six slots, so a genuinely blank date field still yields a best-guess string. Rely on `date_status`, `date_confidence`, and calendar validation to catch these. There is not yet a dedicated "no date present" status.
 - **Signature detection is presence-only**, not verification against a specimen.

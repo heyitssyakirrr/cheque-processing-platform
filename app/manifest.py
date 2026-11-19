@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
-from Cheque_Processing.app.ingestion import InventoryItem
+from app.ingestion import InventoryItem
 
 OUTPUT_FIELDS = [
     "batch_id", "cheque_id", "bank_code", "sequence", "filename",
