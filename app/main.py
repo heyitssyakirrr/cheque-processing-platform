@@ -15,10 +15,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from PIL import Image, UnidentifiedImageError
 
-from app.pipeline import process
-from app.services.accuracy import build_accuracy_report, load_ground_truth
-from app.services.preprocessing import PreprocessOptions
-from app.settings import settings
+from Cheque_Processing.app.pipeline import process
+from Cheque_Processing.app.services.accuracy import build_accuracy_report, load_ground_truth
+from Cheque_Processing.app.services.preprocessing import PreprocessOptions
+from Cheque_Processing.app.settings import settings
 
 
 app = FastAPI(title="Public Bank Berhad Cheque Processor")
@@ -393,4 +393,4 @@ def artifact(batch_id: str, run_id: str, artifact: str) -> FileResponse:
 
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="127.0.0.1", port=5000, reload=True)
+    uvicorn.run("Cheque_Processing.app.main:app", host="127.0.0.1", port=5000, reload=True)
