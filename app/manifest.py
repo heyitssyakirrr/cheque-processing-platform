@@ -30,8 +30,8 @@ class Manifest:
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cheques (
-              cheque_id TEXT PRIMARY KEY, bank_code TEXT NOT NULL, zip_member TEXT NOT NULL,
-              sequence INTEGER NOT NULL, crc INTEGER NOT NULL, size INTEGER NOT NULL,
+              cheque_id TEXT PRIMARY KEY, bank_code TEXT NOT NULL, source_path TEXT NOT NULL,
+              sequence INTEGER NOT NULL, size INTEGER NOT NULL,
               status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
               last_error TEXT, result_json TEXT, output_emitted INTEGER NOT NULL DEFAULT 0,
               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -39,7 +39,10 @@ class Manifest:
         """)
         found = self._meta("fingerprint")
         if found and found != fingerprint:
-            raise RuntimeError("Existing manifest belongs to a different ZIP; use a new batch ID.")
+            raise RuntimeError(
+                f"{path} belongs to a different set of files for {batch_id} (the day was fetched again "
+                "after processing started). Move that batch folder away to start the day over."
+            )
         if not found:
             self._set_meta("batch_id", batch_id)
             self._set_meta("fingerprint", fingerprint)
@@ -56,16 +59,16 @@ class Manifest:
         self.db.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", (key, value))
 
     def seed(self, items: Iterable[InventoryItem]) -> None:
-        rows = [(i.cheque_id, i.bank_code, i.zip_member, i.sequence, i.crc, i.size, "PENDING") for i in items]
+        rows = [(i.cheque_id, i.bank_code, i.source_path, i.sequence, i.size, "PENDING") for i in items]
         with self.db:
             self.db.executemany("""
                 INSERT OR IGNORE INTO cheques
-                (cheque_id, bank_code, zip_member, sequence, crc, size, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (cheque_id, bank_code, source_path, sequence, size, status)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, rows)
         count = self.db.execute("SELECT COUNT(*) FROM cheques").fetchone()[0]
         if count != len(rows):
-            raise RuntimeError("ZIP inventory differs from the existing manifest; refusing unsafe resume.")
+            raise RuntimeError("The day's file list differs from the existing manifest; refusing an unsafe resume.")
 
     def recover_interrupted(self) -> None:
         with self.db:

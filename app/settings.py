@@ -8,15 +8,18 @@ Fields are grouped below by which part of the pipeline they configure:
     3. Date field location (OCR)    -- app/services/date_extraction.py
     4. Digit classifier             -- app/services/digit_classifier.py
     5. Preprocessing                -- app/services/preprocessing.py
-    6. Legacy single-cheque mode    -- app/main.py (Upload/ folder + one CSV)
-    7. Batch ZIP ingestion          -- run.py, app/ingestion.py, app/manifest.py
-    8. Worker process sizing        -- run.py's ProcessPoolExecutor
+    6. Debug output                 -- per-cheque artifacts
+    7. Job 1: fetch from the source -- jobs/job1_fetch_cheques.py, app/fetch.py
+    8. Job 2: batch processing      -- jobs/job2_process_cheques.py, app/ingestion.py, app/manifest.py
+    9. Worker process sizing        -- job 2's ProcessPoolExecutor
+   10. Retention                    -- app/retention.py
 
 Every field can be overridden by an environment variable of the same name
 (case-insensitive), or by editing `.env`. 
 """
 
 import math
+import re
 from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,9 +35,6 @@ class Settings(BaseSettings):
     # 1. Paths & environment
     # ------------------------------------------------------------------
     root: Path = _ROOT
-
-    max_upload_mb: int = 15
-    """Upper bound for a single cheque image accepted by the web app."""
 
     # ------------------------------------------------------------------
     # 2. Signature detection (YOLO)
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     separate from `preprocess_max_long_edge` (2200) -- that value is what
     date_extraction.py's geometry is calibrated against, so it can't move.
     Signature detection has no such calibration dependency and benefits from
-    more resolution (matches script.py's proven max_dim=3000), so it gets
+    more resolution (matches the earlier standalone test's proven max_dim=3000), so it gets
     its own cap. This is a ceiling, not a target: a ~700px scan gains
     nothing from being interpolated up to it before detection."""
 
@@ -190,7 +190,7 @@ class Settings(BaseSettings):
     preprocess_max_long_edge: int = 3000
     preprocess_contrast: float = 1.15
     preprocess_deskew: bool = True
-    """These replace the sliders the removed web form used to supply."""
+    """Resize cap, contrast boost and deskew applied before date reading."""
 
     preprocess_denoise: bool = False
     """Non-local-means denoising costs roughly a second per cheque and only
@@ -198,50 +198,85 @@ class Settings(BaseSettings):
     it."""
 
     # ------------------------------------------------------------------
-    # 6. Legacy single-cheque mode (app/main.py)
+    # 6. Debug output
     # ------------------------------------------------------------------
-    upload_dir_name: str = "Upload"
-    output_csv_name: str = "output.csv"
-    """Folder scanned for individual cheque images, and the single results
-    file the web app writes to. Unrelated to the batch ZIP pipeline below."""
-
-    ground_truth_path: str = "data/ground_truth.csv"
-    """CSV of known-correct answers for cheques you run repeatedly, so
-    accuracy scoring doesn't require re-pasting ground truth every batch.
-    Columns: filename, signature_count, date (DDMMYY or "no date")."""
-
-    save_artifacts: bool = True
+    save_artifacts: bool = False
     """Whether to write per-cheque debug output (annotated images, crops,
-    digit slices, CSVs, result.json) -- roughly 20 files per cheque. Leave
-    off for production volume; turn on when investigating a specific
-    batch."""
+    digit slices, CSVs, result.json) under data/batches/<date>/<seq>-<name>/
+    -- roughly 20 files per cheque, so ~400,000 files for a 20,000-cheque
+    day. Off for daily runs; turn on when investigating a specific batch."""
 
     # ------------------------------------------------------------------
-    # 7. Batch ZIP ingestion (run.py, app/ingestion.py, app/manifest.py)
+    # 7. Job 1: fetch the day's .IMG files from the source server
     # ------------------------------------------------------------------
-    incoming_transport: str = "local"
-    """Where the daily ZIP is fetched from. Only "local" is implemented;
-    the validator below fails fast on anything else. Local is deliberately
-    the default so the exact production code path can be tested on a
-    laptop without SFTP."""
+    source_transport: str = "sftp"
+    """"sftp" (production: paramiko, settings below) or "local" (the source
+    tree is a folder on this machine -- a mounted share, or a fake tree for
+    testing on a laptop). Both use the same path patterns."""
+
+    source_root: str = "/Centric"
+    """Folder above PBB/ and PIBB/ on the source (an SFTP path, or a local
+    folder when source_transport=local)."""
+
+    source_banks: str = "PBB,PIBB"
+    """Comma-separated bank folders fetched each day; each is also the first
+    part of every cheque ID (see `banks`)."""
+
+    source_images_pattern: str = "{root}/{bank}/{date}/GWC/Images"
+    """Where one bank's .IMG files for one day are. {root}=source_root,
+    {bank}=one of source_banks, {date}=YYYYMMDD."""
+
+    source_trigger_pattern: str = ""
+    """Full path of the file that marks one bank's day as complete, with the
+    same placeholders, e.g. "{root}/{bank}/{date}/GWC/<name>". To be
+    confirmed; job 1 refuses to run while it is empty (unless
+    --skip-trigger is given by hand). The trigger is only read, never
+    deleted."""
+
+    sftp_host: str = ""
+    sftp_port: int = 22
+    sftp_username: str = ""
+    sftp_password: str = ""
+    """Leave blank to log in with sftp_key_path instead."""
+
+    sftp_key_path: str = ""
+    """Private key file (e.g. /home/<you>/.ssh/id_rsa); used when set."""
+
+    sftp_known_hosts: str = ""
+    """Extra known_hosts file to trust. ~/.ssh/known_hosts is always read.
+    An unknown server is refused, never trusted automatically."""
+
+    sftp_timeout_seconds: int = 30
+
+    fetch_workers: int = 6
+    """Parallel SFTP connections. ~20,000 small files a day spend their
+    time on per-file round trips, not bandwidth, so a few connections in
+    parallel are much faster than one."""
+
+    fetch_file_attempts: int = 3
+    """Tries per file before job 1 gives up on it (and exits 1)."""
+
+    fetch_poll_minutes: int = 10
+    """How often job 1 checks again while a trigger file is missing."""
+
+    fetch_give_up_at: str = "20:00"
+    """Local time (HH:MM) after which job 1 stops waiting for the trigger
+    files and exits 1. A run started after this time checks once."""
 
     incoming_root: str = "data/incoming"
-    """Directory the runner looks in for the daily ZIP."""
+    """Where job 1 puts each day: <incoming_root>/<YYYYMMDD>/<bank>/*.IMG."""
 
-    batch_zip_name_pattern: str = "{date}_cheques.zip"
-    """Expected filename for a given `--batch-id`, e.g. "20260916_cheques.zip"."""
-
-    staging_dir_name: str = "data/staging"
-    """Where the ZIP is copied to before processing (see `batch_zip_path`)."""
+    # ------------------------------------------------------------------
+    # 8. Job 2: batch processing
+    # ------------------------------------------------------------------
+    date_offset_days: int = 0
+    """Without --date, both jobs use today minus this many days. To be
+    replaced by the batch date your senior confirms."""
 
     max_attempts: int = 3
     """Total attempts per cheque before it's marked permanently failed --
     this counts attempts, not retries (so the default allows 2 retries
     after an initial failure)."""
-
-    cleanup_zip_after_batch: bool = True
-    """Delete the staged ZIP copy once every cheque in the batch is DONE or
-    PERMANENT_FAILED. The original source ZIP is never touched."""
 
     batch_inflight_multiplier: int = 2
     """How many futures to keep queued per worker (`workers *
@@ -249,7 +284,7 @@ class Settings(BaseSettings):
     in memory at once."""
 
     # ------------------------------------------------------------------
-    # 8. Worker process sizing (run.py's ProcessPoolExecutor)
+    # 9. Worker process sizing (job 2's ProcessPoolExecutor)
     # ------------------------------------------------------------------
     worker_count: int = 0
     """Fixed worker process count. 0 means auto-size from the logical-core
@@ -276,6 +311,18 @@ class Settings(BaseSettings):
     `worker_count * threads_per_worker` at or under the core count."""
 
     # ------------------------------------------------------------------
+    # 10. Retention (run at the end of job 2)
+    # ------------------------------------------------------------------
+    incoming_retention_days: int = 30
+    """Days to keep data/incoming/<date>/ (the fetched .IMG files) after
+    that date. Only finished batches are deleted. 0 keeps them forever."""
+
+    batch_retention_days: int = 0
+    """Days to keep data/batches/<date>/ (output CSV, failed CSV, manifest,
+    any debug artifacts). Only finished batches are deleted. 0 keeps them
+    forever."""
+
+    # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
     @model_validator(mode="after")
@@ -292,11 +339,21 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_batch_ingestion(self) -> "Settings":
-        if self.incoming_transport != "local":
-            raise ValueError(
-                "Only incoming_transport='local' is implemented; "
-                "add SFTP after its details are confirmed"
-            )
+        if self.source_transport not in {"sftp", "local"}:
+            raise ValueError("source_transport must be 'sftp' or 'local'")
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", self.fetch_give_up_at):
+            raise ValueError("fetch_give_up_at must be HH:MM (24-hour)")
+        for name in ("fetch_workers", "fetch_file_attempts", "fetch_poll_minutes"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be >= 1")
+        for name in ("date_offset_days", "incoming_retention_days", "batch_retention_days"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be >= 0")
+        if self.batch_retention_days and self.batch_retention_days < self.incoming_retention_days:
+            # The batch folder holds the "finished" marker the image cleanup checks.
+            raise ValueError("batch_retention_days must be 0 or >= incoming_retention_days")
+        if not self.banks or any(not re.fullmatch(r"[A-Za-z0-9_-]+", bank) for bank in self.banks):
+            raise ValueError("source_banks must be comma-separated folder names, e.g. PBB,PIBB")
         if self.max_attempts < 1:
             raise ValueError("max_attempts must be >= 1")
         if self.batch_inflight_multiplier < 1:
@@ -321,21 +378,16 @@ class Settings(BaseSettings):
         return self.root / self.yolo_model_path
 
     @property
-    def upload_dir(self) -> Path:
-        return self.root / self.upload_dir_name
-
-    @property
-    def output_csv(self) -> Path:
-        return self.root / self.output_csv_name
+    def banks(self) -> list[str]:
+        return [bank.strip() for bank in self.source_banks.split(",") if bank.strip()]
 
     @property
     def incoming_dir(self) -> Path:
         value = Path(self.incoming_root)
         return value if value.is_absolute() else self.root / value
 
-    @property
-    def staging_dir(self) -> Path:
-        return self.root / self.staging_dir_name
+    def incoming_day_dir(self, batch_id: str) -> Path:
+        return self.incoming_dir / batch_id
 
     @property
     def batches_dir(self) -> Path:
@@ -344,8 +396,9 @@ class Settings(BaseSettings):
     def batch_dir(self, batch_id: str) -> Path:
         return self.batches_dir / batch_id
 
-    def batch_zip_path(self, batch_id: str) -> Path:
-        return self.staging_dir / f"{batch_id}_cheques.zip"
+    @property
+    def logs_dir(self) -> Path:
+        return self.root / "data" / "logs"
 
     @property
     def _ocr_models_base(self) -> Path:

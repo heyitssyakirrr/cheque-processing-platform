@@ -1,6 +1,6 @@
 # Cheque Processing Platform
 
-An auditable, crash-resilient cheque analysis pipeline built with **FastAPI**, **YOLOv8**, **PaddleOCR**, and a **digit-recognition CNN**. For every cheque image the system answers two questions: *is there a signature?* and *what handwritten date is written on it?* It ships with two ways to run: a **web UI** for interactive review, and a **resumable ZIP batch runner** for high-volume daily processing (~20,000 cheques per batch), backed by a SQLite manifest so that no cheque is ever lost or processed twice, even after a crash.
+An auditable, crash-resilient cheque analysis pipeline built with **YOLOv8**, **PaddleOCR**, and a **digit-recognition CNN**. For every cheque image the system answers two questions: *is there a signature?* and *what handwritten date is written on it?* It runs as **two daily batch jobs**: job 1 fetches the day's `.IMG` files from the source server over SFTP, and job 2 processes them (~20,000 cheques a day), backed by a SQLite manifest so that no cheque is ever lost or processed twice, even after a crash.
 
 ---
 
@@ -10,15 +10,12 @@ An auditable, crash-resilient cheque analysis pipeline built with **FastAPI**, *
 - [Key Features](#-key-features)
 - [Extracted Entities](#-extracted-entities)
 - [How a Single Cheque Is Processed](#-how-a-single-cheque-is-processed)
-- [Batch Mode: Resumable ZIP Processing](#-batch-mode-resumable-zip-processing)
-- [Web Mode: Live Review UI](#-web-mode-live-review-ui)
+- [The Daily Batch: Two Jobs](#-the-daily-batch-two-jobs)
 - [System Requirements](#-system-requirements)
 - [Installation & Setup](#-installation--setup)
 - [Configuration (.env)](#-configuration-env)
-- [Running the Application](#-running-the-application)
-- [Web Routes Reference](#-web-routes-reference)
+- [Running the Jobs](#-running-the-jobs)
 - [Output Reference](#-output-reference)
-- [Accuracy Scoring](#-accuracy-scoring)
 - [Directory Structure & Storage Layout](#-directory-structure--storage-layout)
 - [Performance & Worker Tuning](#-performance--worker-tuning)
 - [Failure Handling & Resiliency](#-failure-handling--resiliency)
@@ -30,21 +27,24 @@ An auditable, crash-resilient cheque analysis pipeline built with **FastAPI**, *
 
 ## 🏗 Overview & Architecture
 
-The project has **one processing core** (`app/pipeline.py`) and **two front doors** that feed it. Both entry points call the same `process()` function, so a cheque produces identical results whether it came from the browser or from the nightly ZIP.
+Job 1 copies the day's images from the source server; job 2 runs every cheque through **one processing core** (`app/pipeline.py`). The jobs are separate programs: a network problem never kills a half-done processing run, and either one can be rerun on its own. Job 2 only starts once job 1 has written `_FETCH_COMPLETE.json`.
 
 ```mermaid
 flowchart LR
-    subgraph Inputs["Input Channels"]
-        ZIP[("Daily ZIP<br/>YYYYMMDD_cheques.zip<br/>PBB/ and PIBB/ .img files")]
-        UI["Browser upload<br/>PNG / JPEG / TIFF"]
+    subgraph Source["Source server (SFTP, read only)"]
+        SRC[("/Centric/PBB/YYYYMMDD/GWC/Images/*.IMG<br/>/Centric/PIBB/YYYYMMDD/GWC/Images/*.IMG<br/>+ one trigger file per bank")]
     end
 
-    subgraph Entry["Entry Points"]
-        RUN["run.py<br/>Resumable batch runner"]
-        WEB["app/main.py<br/>FastAPI web app"]
+    subgraph J1["Job 1: jobs/job1_fetch_cheques.py"]
+        FETCH["app/fetch.py<br/>wait for triggers, parallel download"]
     end
 
-    subgraph Core["Processing Core"]
+    subgraph Incoming["data/incoming/YYYYMMDD/"]
+        IMG[("PBB/*.IMG, PIBB/*.IMG<br/>_FETCH_COMPLETE.json")]
+    end
+
+    subgraph J2["Job 2: jobs/job2_process_cheques.py"]
+        RUN["worker pool"]
         PIPE["app/pipeline.py<br/>process one cheque"]
     end
 
@@ -57,16 +57,13 @@ flowchart LR
         CLS["digit_classifier<br/>CNN"]
     end
 
-    subgraph Persist["Persistence"]
+    subgraph Persist["data/batches/YYYYMMDD/"]
         MAN[("manifest.db<br/>SQLite state")]
         CSV["output.csv<br/>failed.csv"]
-        ART["Per-cheque artifacts<br/>images, CSVs, result.json"]
+        ART["Optional per-cheque artifacts"]
     end
 
-    ZIP --> RUN
-    UI --> WEB
-    RUN --> PIPE
-    WEB --> PIPE
+    SRC --> FETCH --> IMG --> RUN --> PIPE
     PIPE --> PRE
     PIPE --> SIG
     PIPE --> TXT
@@ -75,19 +72,7 @@ flowchart LR
     RUN --> MAN
     RUN --> CSV
     PIPE --> ART
-    WEB --> ART
 ```
-
-### Two modes at a glance
-
-| | **Batch mode** (`run.py`) | **Web mode** (`app/main.py`) |
-| :--- | :--- | :--- |
-| **Purpose** | Production volume, unattended, daily | Interactive review, tuning, demos |
-| **Input** | `YYYYMMDD_cheques.zip` of `.img` files | PNG / JPEG / TIFF uploads (multi-file) |
-| **Concurrency** | Multi-process worker pool | One cheque at a time in a background task |
-| **State** | SQLite manifest (durable, resumable) | In-memory event queue (live view only) |
-| **Output** | `<batch>_output.csv` + `<batch>_failed.csv` | Live result cards + `summary.csv` |
-| **Accuracy scoring** | No | Yes (against `ground_truth.csv`) |
 
 ---
 
@@ -100,10 +85,9 @@ flowchart LR
 - **Calendar validation**: the six digits (`DDMMYY`) are checked against the real calendar (including leap years) and flagged `date_candidate` or `needs_review`.
 - **Resumable batch processing**: a SQLite manifest tracks every cheque's state. Kill the process at any moment and a re-run resumes exactly where it stopped.
 - **Durable, exactly-once output**: a per-cheque completion record is written and fsynced *before* the parent acknowledges it, and the output CSV is rebuilt on startup to repair any half-written row.
-- **Safe ZIP ingestion**: CRC validation, path-traversal rejection, duplicate detection, atomic staging copy, and streaming reads (the ZIP is never bulk-extracted to disk).
+- **Efficient, safe fetching**: one listing call per bank folder, parallel SFTP downloads, `.part` files renamed only after a size check, reruns copy only what is missing, and the source server is never modified.
 - **Auto-sized worker pool**: worker count derived from CPU cores, with native thread pools (OpenMP / MKL / BLAS) capped per worker to prevent oversubscription.
-- **Live web UI**: Server-Sent Events stream each cheque's result card to the browser the moment it finishes.
-- **Built-in accuracy report**: compare results against a ground-truth CSV and get per-cheque and aggregate signature / digit accuracy.
+- **Retention**: fetched images are deleted after `INCOMING_RETENTION_DAYS` (default 30), batch output after `BATCH_RETENTION_DAYS` (default: kept); only finished days are ever deleted.
 - **Full audit trail**: annotated images, crops, per-digit top-3 candidates, and a complete `result.json` for every cheque (optional, toggled by `SAVE_ARTIFACTS`).
 
 ---
@@ -120,7 +104,7 @@ flowchart LR
 | `date_confidence` | The **weakest** per-digit probability (a date is only as trustworthy as its least certain digit). |
 | Per-digit top-3 | For each of the 6 slots, the three most likely digits with probabilities. |
 | OCR text lines | All printed text found in the date region with quadrilateral coordinates and confidence. |
-| `bank_code` (batch) | `PBB` or `PIBB`, taken from the ZIP folder the cheque lives in. |
+| `bank_code` | `PBB` or `PIBB`, the source folder the cheque came from. |
 
 > **Signature detection is presence detection only.** The system reports *whether a signature-like region exists*, not whether it is *authentic* or matches a specimen.
 
@@ -262,32 +246,69 @@ The six winning digits are formatted as `DD/MM/YY` and validated as a real calen
 
 ---
 
-## 📦 Batch Mode: Resumable ZIP Processing
+## 📦 The Daily Batch: Two Jobs
 
-Batch mode is built for one job: take the day's ZIP, process every cheque in it, and produce one CSV, *reliably*, even if the machine dies halfway.
+### Source layout (read only)
 
-### Input contract
+```text
+<SOURCE_ROOT>/PBB/YYYYMMDD/GWC/Images/*.IMG      e.g. 202610130233041011018120290009.IMG
+<SOURCE_ROOT>/PIBB/YYYYMMDD/GWC/Images/*.IMG
+<SOURCE_TRIGGER_PATTERN>                          one per bank: marks that bank's day as complete
+```
 
-- File name: `YYYYMMDD_cheques.zip` (pattern configurable via `BATCH_ZIP_NAME_PATTERN`), placed in `data/incoming/`.
-- Contents: `.img` files beneath a top-level `PBB/` and/or `PIBB/` folder. Non-`.img` files are ignored; an `.img` outside those folders is rejected.
-- Each `.img` is decoded with Pillow, **frame zero** is used (multi-frame TIFF-style images), converted to RGB if needed, and re-encoded as a temporary JPEG (quality 95) that is deleted immediately after processing. Nothing is bulk-extracted to disk.
+The folder layout and trigger path are settings (`SOURCE_IMAGES_PATTERN`, `SOURCE_TRIGGER_PATTERN`), with `{root}`, `{bank}` and `{date}` placeholders. The extension is matched in any case (`.IMG` / `.img`). Nothing on the source is ever deleted, moved or written; the trigger files are only read.
 
-### End-to-end flow
+### Job 1: fetch (`jobs/job1_fetch_cheques.py`)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Op as Operator / Scheduler
-    participant R as run.py (parent)
+    participant S as Scheduler (e.g. 18:00)
+    participant J as Job 1
+    participant R as Source server
+    participant D as data/incoming/YYYYMMDD
+
+    S->>J: python jobs/job1_fetch_cheques.py
+    J->>D: lock .fetch.lock
+    loop until both trigger files exist (every FETCH_POLL_MINUTES, until FETCH_GIVE_UP_AT)
+        J->>R: stat PBB trigger, PIBB trigger
+    end
+    J->>R: listdir_attr each Images folder (names + sizes, one call each)
+    J->>D: compare: skip files already here with the same size, remove leftovers
+    par FETCH_WORKERS connections
+        J->>R: get file -> name.IMG.part
+        J->>D: check size, rename to name.IMG (retry up to FETCH_FILE_ATTEMPTS)
+    end
+    J->>D: write _FETCH_COMPLETE.json (every file + size) LAST
+    J-->>S: exit 0
+```
+
+- One folder per day: `data/incoming/YYYYMMDD/PBB/*.IMG` and `.../PIBB/*.IMG`. No ZIP: SFTP cannot zip on the source side, and zipping after download would only add time and a second copy.
+- The cheque ID is `<bank>/<file name>`, so the same file name in PBB and PIBB never clashes.
+- A rerun copies only what is still missing. Once `_FETCH_COMPLETE.json` exists, the day is not fetched again unless `--force` is given.
+- A bank whose trigger exists but whose `Images` folder does not is counted as 0 cheques (logged as a warning).
+
+| Exit code | Meaning |
+| :--- | :--- |
+| `0` | The day is fetched (or was already). |
+| `1` | Not ready (trigger missing at `FETCH_GIVE_UP_AT`), some files not copied, or the server could not be reached. Run again later. |
+| `2` | Configuration problem (missing `.env` setting, server not in `known_hosts`, login refused). Fix it first. |
+
+### Job 2: process (`jobs/job2_process_cheques.py`)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Scheduler
+    participant R as Job 2 (parent)
     participant M as manifest.db (SQLite)
     participant W as Worker process
     participant FS as Disk
 
-    Op->>R: python run.py --batch-id 20260916
+    S->>R: python jobs/job2_process_cheques.py
+    R->>FS: read _FETCH_COMPLETE.json; check every listed file exists with its size
     R->>FS: acquire batch lock (.lock)
-    R->>FS: stage ZIP (copy to .part, fsync, verify size, atomic rename)
-    R->>R: inventory ZIP (CRC test, unsafe paths, duplicates)
-    R->>M: seed all cheques as PENDING (idempotent)
+    R->>M: seed all cheques as PENDING (idempotent; file-set fingerprint checked)
     R->>M: reset IN_PROGRESS back to PENDING
     R->>FS: rebuild output CSV from DONE rows (repair)
     R->>FS: import leftover completion records
@@ -295,7 +316,7 @@ sequenceDiagram
     loop each pending cheque (bounded in-flight queue)
         R->>M: mark IN_PROGRESS
         R->>W: submit task
-        W->>FS: read ZIP member, convert to temp JPEG
+        W->>FS: read .IMG, convert to temp JPEG
         W->>W: pipeline.process()
         W->>FS: write completion JSON (atomic + fsync)
         W-->>R: ok
@@ -303,10 +324,12 @@ sequenceDiagram
         R->>FS: append CSV row (fsync)
     end
 
-    R->>FS: write failed CSV
-    R->>FS: delete staged ZIP if all cheques succeeded
-    R-->>Op: exit code 0, 1 or 2
+    R->>FS: write failed CSV; _BATCH_COMPLETE.json when nothing is left to retry
+    R->>FS: retention cleanup of old finished days
+    R-->>S: exit code 0, 1, 2 or 3
 ```
+
+Each `.IMG` is decoded with Pillow, **frame zero** is used (multi-frame TIFF-style images), converted to RGB if needed, and re-encoded as a temporary JPEG (quality 95) that is deleted right after processing.
 
 ### Cheque lifecycle
 
@@ -314,7 +337,7 @@ Every cheque is a row in the manifest's `cheques` table and moves through this s
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: seeded from ZIP inventory
+    [*] --> PENDING: seeded from the fetched day's file list
     PENDING --> IN_PROGRESS: submitted to a worker
     IN_PROGRESS --> DONE: processed successfully
     IN_PROGRESS --> RETRYABLE_FAILED: error, attempts below MAX_ATTEMPTS
@@ -325,18 +348,17 @@ stateDiagram-v2
     PERMANENT_FAILED --> [*]
 ```
 
-> Each run attempts every unfinished cheque **once**. A cheque that fails becomes `RETRYABLE_FAILED` and is retried the **next time `run.py` is executed**, up to `MAX_ATTEMPTS` total attempts (default 3). Wire the runner to a scheduler and use its exit code to trigger a re-run (see below).
+> Each run attempts every unfinished cheque **once**. A cheque that fails becomes `RETRYABLE_FAILED` and is retried the **next time job 2 runs**, up to `MAX_ATTEMPTS` total attempts (default 3). Use the exit code to trigger a rerun.
 
 ### Why it never loses or duplicates a cheque
 
 | Concern | Mechanism |
 | :--- | :--- |
-| Corrupt or hostile ZIP | `testzip()` CRC check, `..` / absolute-path rejection, duplicate-member rejection, folder-prefix enforcement |
-| Half-copied ZIP | Copy to `*.part`, `fsync`, compare size to source, then atomic `os.replace` |
-| Original ZIP safety | The source ZIP is **never modified**; only the staged copy is deleted after a fully successful batch |
-| Wrong ZIP for a batch ID | Manifest stores the ZIP's **SHA-256 fingerprint**; a different ZIP with the same batch ID is refused |
-| Changed inventory | If the ZIP's cheque list differs from the manifest, resume is refused rather than risk wrong results |
-| Two runners at once | Exclusive file lock (`.lock`) per batch directory |
+| Half-copied file | Job 1 downloads to `*.part`, checks the size against the source listing, then renames |
+| Half-fetched day | `_FETCH_COMPLETE.json` is written last; job 2 refuses to start without it and checks every listed file and size |
+| Source safety | The source server is **only read**; triggers are never deleted |
+| Day fetched again after processing began | The manifest stores a **fingerprint of the file list** (names + sizes); a different set is refused |
+| Two runners at once | Exclusive file locks: `.fetch.lock` (job 1), `.lock` per batch (job 2) |
 | Crash mid-cheque | `IN_PROGRESS` rows are reset to `PENDING` on next start and reprocessed |
 | Crash between "worker finished" and "parent recorded it" | The worker writes an fsynced **completion JSON** first; on restart the runner imports any leftover completion records |
 | Ambiguous last CSV row after a crash | The output CSV is **rebuilt atomically** from `DONE` rows on every start, before new rows are appended |
@@ -344,66 +366,37 @@ stateDiagram-v2
 | One bad scan killing the batch | Each worker catches its own exceptions; failure is recorded and the batch continues |
 | Memory blow-up on 20,000 cheques | Only `workers × BATCH_INFLIGHT_MULTIPLIER` tasks are ever queued at once |
 
-### Exit codes
+### Exit codes (job 2)
 
 | Code | Meaning |
 | :--- | :--- |
 | `0` | Every cheque is `DONE`. |
-| `1` | Some cheques are still unfinished (`PENDING` / `RETRYABLE_FAILED`). Re-run to continue. |
-| `2` | Everything was attempted, but some cheques are `PERMANENT_FAILED`. See `<batch>_failed.csv`. |
+| `1` | Some cheques are still unfinished (`PENDING` / `RETRYABLE_FAILED`). Run again to continue. |
+| `2` | Everything was attempted, but some cheques are `PERMANENT_FAILED`. See `<date>_failed.csv`. |
+| `3` | Job 1 has not finished the day (no `_FETCH_COMPLETE.json`). |
 
----
+### Which day
 
-## 🖥 Web Mode: Live Review UI
+Both jobs take `--date YYYYMMDD` for reruns and catch-up. Without it they use today minus `DATE_OFFSET_DAYS` (default `0`). This is a placeholder until the batch date is confirmed; only `app/batch_date.py` needs to change then.
 
-The web app accepts one or many cheque images, processes them in the background, and streams each result to the browser as soon as it is ready. Upload and results are separate pages, so a finished batch has its own permanent URL.
+### Retention
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant B as Browser
-    participant A as FastAPI app
-    participant Q as In-memory SSE queue
-    participant P as pipeline.process (thread)
+At the end of job 2, folders named `YYYYMMDD` are deleted:
 
-    B->>A: POST /process (images + settings)
-    A->>A: validate type, size, Pillow verify
-    A->>Q: create queue for new batch ID
-    A-->>B: 303 redirect to /batches/{id}
-    A->>P: start background task
-    B->>A: GET /batches/{id}
-    A-->>B: results page (live mode)
-    B->>A: GET /batches/{id}/stream (EventSource)
+- `data/incoming/<date>/` (the fetched images) once older than `INCOMING_RETENTION_DAYS` (default **30**),
+- `data/batches/<date>/` (output CSV, manifest, any artifacts) once older than `BATCH_RETENTION_DAYS` (default **0 = keep forever**),
 
-    loop each uploaded image
-        P->>P: process (CPU-bound, run in executor)
-        P->>Q: push "cheque" event with rendered HTML card
-        Q-->>B: server-sent event, card appears
-    end
-
-    P->>P: write summary.csv, score accuracy
-    P->>Q: push "batch_done"
-    Q-->>B: enable summary download
-```
-
-**Design notes**
-
-- Processing is CPU-bound (OpenCV, Paddle, YOLO, torch), so it runs via `run_in_executor`. This keeps the event loop free to flush SSE events immediately.
-- One failing image emits a `cheque_error` event and the rest of the batch continues.
-- While a batch is processing it lives in memory (`_batch_queues`). Once finished, the page is rebuilt purely from the saved `result.json` files, so **results survive a server restart**.
-- Upload temp files are always deleted in a `finally` block.
-- The upload form exposes preprocessing options (max edge, contrast, denoise, deskew), the signature threshold, and date search width, all bounds-checked on the server.
-
-> **Requirement:** the web UI reads annotated images and `result.json` from disk, so it needs `SAVE_ARTIFACTS=true` (the default).
+and only when that day's batch **finished** (`_BATCH_COMPLETE.json`). An unfinished day past its retention is kept and logged as a warning.
 
 ---
 
 ## ⚙️ System Requirements
 
-- **Operating System**: **Windows** for batch mode (see [Known Limitations](#-known-limitations)). The web app itself is standard Python/FastAPI.
+- **Operating System**: Linux (SVDWH008) or Windows. Batch locking uses `fcntl` on Linux and `msvcrt` on Windows.
 - **Python**: 3.10 or 3.11 (PaddleOCR support is substantially better than on 3.9).
 - **Hardware**: CPU-only inference. No GPU is required or used.
-- **Disk**: allow for artifact output. With `SAVE_ARTIFACTS=true`, each cheque writes roughly 20 files.
+- **Network**: job 1 needs to reach the source server's SFTP port (22 by default). Check from the server first: `nc -vz <server-ip> 22`.
+- **Disk**: ~20,000 files × 20–60 KB is about 0.4–1.2 GB of images a day, so about 12–36 GB with the default 30 days kept. With `SAVE_ARTIFACTS=true`, each cheque also writes roughly 20 debug files.
 - **Model files** (not included in the repository):
   - YOLOv8 signature weights, `models/yolov8s.pt`
   - Digit CNN weights, `models/developerPratik-mnist-cnn/best_model.pth`
@@ -453,7 +446,15 @@ cheque-processing-platform/
 - On an **offline** machine, make sure all three model sets are already on disk; PaddleOCR will otherwise try (and fail) to download.
 
 ### 5. Create the `.env`
-See the next section. Every setting has a default, so a minimal `.env` is enough.
+Copy `.env.example` to `.env` and fill in the SFTP server details (see the next section). `.env` is git-ignored, so passwords never reach the repository.
+
+### 6. Trust the source server's host key (once)
+Job 1 refuses any server whose key is not in `known_hosts`, so it can never be pointed at an impostor. Get the key's fingerprint from the server's team, then on the machine that runs job 1:
+
+```bash
+ssh-keyscan -p 22 <server> >> ~/.ssh/known_hosts
+ssh-keygen -lf ~/.ssh/known_hosts      # compare the fingerprint with the one you were given
+```
 
 ---
 
@@ -463,14 +464,14 @@ Settings are defined in one validated object (`app/settings.py`, Pydantic Settin
 
 ### Minimal example
 
-```ini
-# Model locations
-YOLO_MODEL_PATH=models/yolov8s.pt
-DIGIT_MODEL_PATH=models/developerPratik-mnist-cnn/best_model.pth
-OCR_MODELS_DIR=../FileReader/models
+See `.env.example` for every setting the jobs need. The essentials:
 
-# Behaviour
-SAVE_ARTIFACTS=true
+```ini
+SFTP_HOST=<server name or IP>
+SFTP_USERNAME=<user>
+SFTP_PASSWORD=<password>            # or SFTP_KEY_PATH=/home/<you>/.ssh/id_rsa
+SOURCE_ROOT=/Centric
+SOURCE_TRIGGER_PATTERN={root}/{bank}/{date}/GWC/<trigger name>
 WORKER_COUNT=1
 ```
 
@@ -521,20 +522,36 @@ WORKER_COUNT=1
 | `PREPROCESS_DESKEW` | `true` | Correct small tilt (up to 8°). |
 | `PREPROCESS_DENOISE` | `false` | Non-local-means denoise. Costs about a second per cheque, so it is off by default. |
 
-### Batch ingestion
+### Job 1: fetch from the source server
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `INCOMING_TRANSPORT` | `local` | Only `local` is implemented. Any other value fails validation at startup. |
-| `INCOMING_ROOT` | `data/incoming` | Folder searched for the daily ZIP. |
-| `BATCH_ZIP_NAME_PATTERN` | `{date}_cheques.zip` | Expected ZIP name for a batch ID. |
-| `STAGING_DIR_NAME` | `data/staging` | Where the ZIP copy is staged. |
+| `SOURCE_TRANSPORT` | `sftp` | `sftp`, or `local` when the source tree is a folder on this machine (a mounted share, or a fake tree for testing). |
+| `SFTP_HOST` / `SFTP_PORT` | *(empty)* / `22` | Source server. |
+| `SFTP_USERNAME` | *(empty)* | Login name. |
+| `SFTP_PASSWORD` / `SFTP_KEY_PATH` | *(empty)* | Password, or a private key file. One of them is required. |
+| `SFTP_KNOWN_HOSTS` | *(empty)* | Extra `known_hosts` file; `~/.ssh/known_hosts` is always read. Unknown servers are refused. |
+| `SFTP_TIMEOUT_SECONDS` | `30` | Connect / login timeout. |
+| `SOURCE_ROOT` | `/Centric` | Folder above `PBB/` and `PIBB/`. |
+| `SOURCE_BANKS` | `PBB,PIBB` | Bank folders fetched each day. |
+| `SOURCE_IMAGES_PATTERN` | `{root}/{bank}/{date}/GWC/Images` | Where one bank's `.IMG` files for one day are. |
+| `SOURCE_TRIGGER_PATTERN` | *(empty)* | Full path of each bank's trigger file. Required (job 1 exits 2 without it), unless run by hand with `--skip-trigger`. |
+| `FETCH_WORKERS` | `6` | Parallel SFTP connections. |
+| `FETCH_FILE_ATTEMPTS` | `3` | Tries per file before job 1 gives up on it. |
+| `FETCH_POLL_MINUTES` | `10` | How often to check again for missing trigger files. |
+| `FETCH_GIVE_UP_AT` | `20:00` | Local time after which job 1 stops waiting and exits 1. |
+| `INCOMING_ROOT` | `data/incoming` | Where fetched days are written. |
+
+### Job 2: processing and retention
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `DATE_OFFSET_DAYS` | `0` | Without `--date`, both jobs use today minus this many days. |
 | `MAX_ATTEMPTS` | `3` | Total attempts per cheque before it is permanently failed. |
-| `CLEANUP_ZIP_AFTER_BATCH` | `true` | Delete the staged copy after a fully successful batch. |
 | `BATCH_INFLIGHT_MULTIPLIER` | `2` | Queued futures per worker. |
-| `GROUND_TRUTH_PATH` | `data/ground_truth.csv` | Ground-truth file for accuracy scoring. |
-| `SAVE_ARTIFACTS` | `true` | Write per-cheque debug files. Turn **off** for production volume. |
-| `MAX_UPLOAD_MB` | `15` | Maximum single upload size in the web app. |
+| `SAVE_ARTIFACTS` | `false` | Write ~20 per-cheque debug files. Turn on only to investigate a batch. |
+| `INCOMING_RETENTION_DAYS` | `30` | Days to keep fetched images (finished days only). `0` = forever. |
+| `BATCH_RETENTION_DAYS` | `0` | Days to keep batch output (finished days only). `0` = forever; otherwise at least `INCOMING_RETENTION_DAYS`. |
 
 ### Worker sizing
 
@@ -548,136 +565,73 @@ WORKER_COUNT=1
 
 ---
 
-## 🏃 Running the Application
+## 🏃 Running the Jobs
 
-### Web UI
+From the project folder:
 
-```powershell
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+```bash
+python jobs/job1_fetch_cheques.py                  # fetch today's folder (waits for the trigger files)
+python jobs/job2_process_cheques.py                # process it
 ```
 
-Open `http://127.0.0.1:8000`. For development with hot-reload you can also run `python -m app.main`, which listens on port `5000`.
+Options (both jobs): `--date YYYYMMDD` to work on another day. Job 1 also has `--force` (fetch a day again) and `--skip-trigger` (by hand only: don't wait for the trigger files).
 
-> Run a **single** Uvicorn worker (the default). Batch progress lives in an in-memory queue, so multiple web workers would not share it.
-
-The first request loads the models, so it is slower than the ones after it.
-
-### Batch runner
-
-1. Copy the day's ZIP into `data/incoming/`, named `YYYYMMDD_cheques.zip`.
-2. Run:
-
-```powershell
-python run.py --batch-id 20260916
-```
-
-`--batch-id` must be 8 digits (`YYYYMMDD`) and defaults to today's date.
-
-Example console output:
+Example job 2 output:
 
 ```text
-Batch 20260916: 20000 cheques; 20000 to process; 12 worker(s).
-[1/20000] PBB/000001.img -> DONE
-[2/20000] PIBB/000002.img -> DONE
+Batch 20261119: 20000 cheques {'PBB': 14000, 'PIBB': 6000}; 20000 to process; 12 worker(s).
+[500/20000] PBB/202610130233041011018120290009.IMG -> DONE
 ...
-Output: data\batches\20260916\20260916_output.csv
-Status: {'DONE': 19997, 'PERMANENT_FAILED': 3}
+Output: data/batches/20261119/20261119_output.csv
+Status: {'DONE': 19997, 'PERMANENT_FAILED': 3} (5400s this run)
 ```
 
-**To resume after a crash, power loss, or Ctrl+C: run the exact same command again.** Finished cheques are skipped, interrupted ones restart, and the CSV is repaired first.
+Each job also writes `data/logs/<date>_job1.log` / `<date>_job2.log`.
 
-### Scheduling a daily run (Windows Task Scheduler)
+**To resume after a crash, power loss, or Ctrl+C: run the same command again.** Job 1 copies only what is missing; job 2 skips finished cheques, restarts interrupted ones, and repairs the CSV first.
 
-```powershell
-schtasks /Create /SC DAILY /ST 02:00 /TN "ChequeBatch" `
-  /TR "cmd /c cd /d C:\path\to\cheque-processing-platform && .venv\Scripts\python.exe run.py"
-```
+### Scheduling
 
-Because the batch ID defaults to today's date, no arguments are needed. Have the scheduler (or a wrapper script) re-run the command when the exit code is `1`, and alert someone when it is `2`.
+Schedule job 1 at the time the source is expected to be ready (for example 18:00); it waits for the trigger files until `FETCH_GIVE_UP_AT`. Start job 2 when job 1 exits `0` (same scheduler entry, or its own schedule: it exits `3` until the day is fetched). Rerun on exit code `1`; alert someone on job 1's `2` or job 2's `2`.
 
 ### Start with one worker
 
-Begin with `WORKER_COUNT=1` on a laptop and increase only after measuring memory and throughput on the target machine. With one worker the runner processes in-process (no process pool), which is also the easiest mode to debug.
+Begin with `WORKER_COUNT=1` and increase only after measuring memory and throughput on the target machine. With one worker the runner processes in-process (no process pool), which is also the easiest mode to debug.
+
+### Tests
+
+```bash
+python test/test_fetch.py
+python test/test_ingestion_retention.py
+```
+
+They use a fake source tree in a temporary folder (no server, no models needed). The SFTP connection itself can only be tested against the real server.
 
 ### SVDWH008 copy (branch `uat-008`)
 
 On SVDWH008 the project is `/pythonITD/dwh_312/Cheque_Processing`, next to `TransactionODD` and `FileReader`, and is imported as a package from `dwh_312`, so its imports read `from Cheque_Processing.app.settings import ...`. `main` keeps the plain `app.` imports. After committing on `main`, run:
 
-```powershell
+```bash
 python tools/build_uat_branch.py
 ```
 
-It rebuilds `uat-008` from the last commit with the `Cheque_Processing.` prefix on every project import (plus a `sys.path` line in `run.py` so `python Cheque_Processing/run.py` works from `dwh_312`), checks that every prefixed import resolves, and force-pushes it. Copy files to SVDWH008 from `uat-008` as they are. Never edit `uat-008` by hand; `--no-push` builds and checks without pushing.
-
----
-
-## 📡 Web Routes Reference
-
-| Method | Path | Purpose |
-| :--- | :--- | :--- |
-| `GET` | `/` | Upload page with adjustable processing settings. |
-| `POST` | `/process` | Accept images, start background processing, `303` redirect to the batch page. |
-| `GET` | `/batches/{batch_id}` | Results page. Live (SSE) while running; rebuilt from disk once finished. |
-| `GET` | `/batches/{batch_id}/stream` | Server-Sent Events stream (only while the batch is processing). |
-| `GET` | `/batches/{batch_id}/summary.csv` | Download the batch summary CSV. |
-| `GET` | `/batches/{batch_id}/accuracy_report.csv` | Download the accuracy report CSV. |
-| `POST` | `/batches/{batch_id}/ground-truth` | Re-score a finished batch after editing `ground_truth.csv`. |
-| `GET` | `/batches/{batch_id}/{run_id}/{artifact}` | Serve one image or file from a single cheque's own folder. |
-
-### `POST /process`
-
-`multipart/form-data`:
-
-| Field | Type | Allowed range | Default |
-| :--- | :--- | :--- | :--- |
-| `cheques` | file(s) | PNG, JPEG, TIFF; up to `MAX_UPLOAD_MB` each | required |
-| `max_edge` | int | 800 to 5000 | 2200 |
-| `contrast` | float | 0.5 to 2.5 | 1.15 |
-| `yolo_threshold` | float | 0.1 to 0.95 | 0.50 (form pre-fills 0.30) |
-| `date_width` | int | 100 to 1000 | 450 (accepted for compatibility; not used by the current date crop) |
-| `denoise` | bool | | false |
-| `deskew` | bool | | false |
-
-Example:
-
-```bash
-curl -X POST "http://127.0.0.1:8000/process" \
-     -F "cheques=@cheque1.jpg" -F "cheques=@cheque2.jpg" \
-     -F "yolo_threshold=0.30" -i
-```
-
-| Status | Meaning |
-| :--- | :--- |
-| `303` | Accepted. `Location` points to `/batches/{batch_id}`. |
-| `413` | A file exceeds the size limit. |
-| `415` | Content type is not PNG, JPEG, or TIFF. |
-| `422` | No file selected, file is not a valid image, or a setting is out of range. |
-| `404` | Unknown or malformed batch / run ID, or artifact outside the run folder. |
-
-### Server-Sent Events
-
-| Event | Payload |
-| :--- | :--- |
-| `batch_start` | `{ batch_id, total }` |
-| `cheque` | `{ html, signature_detected, date_status }`, where `html` is the rendered result card |
-| `cheque_error` | `{ filename, sequence, error }` |
-| `batch_done` | `{ batch_id, completed, summary_url }` |
+It rebuilds `uat-008` from the last commit with the `Cheque_Processing.` prefix on every project import (and the jobs' `sys.path` line pointing at `dwh_312`, so `python Cheque_Processing/jobs/job1_fetch_cheques.py` works from there), checks that every prefixed import resolves, runs the tests on the prefixed copy, and force-pushes it. Copy files to SVDWH008 from `uat-008` as they are. Never edit `uat-008` by hand; `--no-push` builds, checks and tests without pushing.
 
 ---
 
 ## 📊 Output Reference
 
-### Batch output CSV: `data/batches/<batch_id>/<batch_id>_output.csv`
+### Output CSV: `data/batches/<date>/<date>_output.csv`
 
 One row per successfully processed cheque, appended live and fsynced.
 
 | Column | Description |
 | :--- | :--- |
 | `batch_id` | The batch (`YYYYMMDD`). |
-| `cheque_id` | Unique ID, the ZIP member path (e.g. `PBB/000001.img`). |
+| `cheque_id` | Unique ID, `<bank>/<file name>` (e.g. `PBB/202610130233041011018120290009.IMG`). |
 | `bank_code` | `PBB` or `PIBB`. |
-| `sequence` | 1-based order within the sorted ZIP inventory. |
-| `filename` | The `.img` file name. |
+| `sequence` | 1-based order within the day's sorted file list. |
+| `filename` | The `.IMG` file name. |
 | `signature_detected` | `YES` / `NO`. |
 | `date` | Handwritten date, `DD/MM/YY`. |
 | `start_time`, `end_time` | Wall-clock processing window for this cheque. |
@@ -686,22 +640,18 @@ One row per successfully processed cheque, appended live and fsynced.
 | `t_read`, `t_preprocess`, `t_signature`, `t_ocr`, `t_date` | Per-stage timings in seconds, for spotting bottlenecks. |
 | `error` | Empty on success. |
 
-### Batch failure CSV: `<batch_id>_failed.csv`
+### Failure CSV: `<date>_failed.csv`
 
 Columns: `batch_id, cheque_id, bank_code, sequence, attempts, last_error`. Lists only cheques that exhausted `MAX_ATTEMPTS`.
 
-### Web summary CSV: `summary.csv`
-
-`sequence, filename, run_id, signature_detected, signature_confidence, date, date_status, date_confidence, raw_digits, date_validation, text_region_count, preprocessing_scale, preprocessing_deskew_degrees`
-
-### `result.json` (per cheque, abridged and illustrative)
+### `result.json` (per cheque when `SAVE_ARTIFACTS=true`, abridged and illustrative)
 
 ```json
 {
   "run_id": "001-cheque-0001",
   "batch_id": "20260916",
   "sequence": 1,
-  "source_filename": "000001.img",
+  "source_filename": "202610130233041011018120290009.IMG",
   "pixels": "700x350",
   "timings": { "read": 0.01, "preprocess": 0.12, "signature": 0.35, "ocr": 0.80, "date": 0.09 },
   "preprocessing": { "scale": 4.0, "deskew_degrees": -0.4, "signature_scale": 2.86 },
@@ -751,76 +701,54 @@ The orange **search zone** rectangle on `signature/annotated.png` is intentional
 
 ---
 
-## 🎯 Accuracy Scoring
-
-The web app can score a batch against known-correct answers. Create `data/ground_truth.csv`:
-
-```csv
-filename,signature_count,date
-000001.img,1,160926
-000002.img,2,050826
-000003.img,0,no date
-```
-
-- `filename` is matched by **lowercased stem**, so the extension does not need to match.
-- `date` is `DDMMYY` (separators are ignored) or `no date`.
-- Scoring runs automatically when a web batch finishes. After editing the CSV, use **Rescore** on the results page to re-score without reprocessing images.
-
-| Metric | Meaning |
-| :--- | :--- |
-| Signature detection rate | Total predicted signatures ÷ total ground-truth signatures |
-| Cheques with a signature found | Of cheques that truly have a signature, how many got at least one detection (the forgiving question) |
-| Digit accuracy | Correct digits ÷ total digits, compared position by position |
-| Exact date match | Cheques where all six digits are correct |
-
-Results are saved as `accuracy_report.json` and `accuracy_report.csv` in the batch folder.
-
----
-
 ## 📂 Directory Structure & Storage Layout
 
 ```text
+├── jobs/
+│   ├── job1_fetch_cheques.py         # Job 1: SFTP fetch of one day (CLI)
+│   └── job2_process_cheques.py       # Job 2: resumable batch processing (CLI)
 ├── app/
-│   ├── main.py                       # FastAPI routes, upload validation, SSE, accuracy endpoints
-│   ├── pipeline.py                   # process(): orchestrates one cheque end to end
-│   ├── settings.py                   # Validated configuration (Pydantic Settings)
-│   ├── ingestion.py                  # ZIP staging, inventory, SHA-256, batch lock
+│   ├── fetch.py                      # Trigger wait, listing, parallel download, _FETCH_COMPLETE.json
+│   ├── ingestion.py                  # Fetched-day inventory and checks, file-set fingerprint, locks
 │   ├── manifest.py                   # SQLite state machine + output CSV writer
-│   ├── services/
-│   │   ├── preprocessing.py          # Resize / deskew / contrast; signature and OCR zone crops
-│   │   ├── signature_detection.py    # YOLOv8 inference, annotation, crops
-│   │   ├── text_detection.py         # PaddleOCR engine + annotated output
-│   │   ├── date_extraction.py        # Label anchoring, crop geometry, calendar validation
-│   │   ├── digit_segmentation.py     # Ink-based slicing into exactly 6 digit images
-│   │   ├── digit_classifier.py       # Loads CNN/ViT, batched top-k prediction
-│   │   ├── digit_model.py            # DigitCNN architecture definition
-│   │   ├── img_conversion.py         # .img bytes to JPEG (frame zero)
-│   │   ├── accuracy.py               # Ground-truth loading and scoring
-│   │   └── field_extraction.py       # Payee / amount heuristics (not wired into the pipeline)
-│   ├── templates/                    # index.html, results.html, _cheque_card.html
-│   └── static/site.css               # Public Bank-inspired red UI theme
-├── run.py                            # Resumable batch runner (CLI)
-├── script.py                         # Standalone signature-detection test harness
+│   ├── pipeline.py                   # process(): orchestrates one cheque end to end
+│   ├── batch_date.py                 # Which day a job works on (--date, DATE_OFFSET_DAYS)
+│   ├── retention.py                  # Deletes old finished day folders
+│   ├── job_log.py                    # data/logs/<date>_<job>.log
+│   ├── settings.py                   # Validated configuration (Pydantic Settings)
+│   └── services/
+│       ├── preprocessing.py          # Resize / deskew / contrast; signature and OCR zone crops
+│       ├── signature_detection.py    # YOLOv8 inference, annotation, crops
+│       ├── text_detection.py         # PaddleOCR engine + annotated output
+│       ├── date_extraction.py        # Label anchoring, crop geometry, calendar validation
+│       ├── digit_segmentation.py     # Ink-based slicing into exactly 6 digit images
+│       ├── digit_classifier.py       # Loads CNN/ViT, batched top-k prediction
+│       ├── digit_model.py            # DigitCNN architecture definition
+│       └── img_conversion.py         # .IMG bytes to JPEG (frame zero)
+├── test/                             # python test/<file>.py (fake source tree, no models)
+├── tools/build_uat_branch.py         # Builds the uat-008 branch for SVDWH008
+├── .env.example
 ├── requirements.txt
 └── Runtime data (generated, git-ignored):
+    ├── .env                          # Real settings, incl. SFTP login
     ├── models/                       # YOLO + digit CNN weights
     └── data/
-        ├── incoming/                 # Daily ZIPs are dropped here (also web upload temp files)
-        ├── staging/                  # Verified copy of the ZIP being processed
-        ├── ground_truth.csv          # Optional accuracy reference
-        └── batches/<batch_id>/
-            ├── manifest.db           # SQLite source of truth
-            ├── .lock                 # Single-runner lock
-            ├── completion/           # Durable per-cheque completion records
-            ├── tmp/                  # Temporary JPEGs (auto-cleaned)
-            ├── <batch_id>_output.csv
-            ├── <batch_id>_failed.csv
-            ├── summary.csv           # Web mode
-            ├── accuracy_report.json / .csv
-            └── <seq>-<name>/         # Per-cheque artifact folders
+        ├── incoming/<date>/          # Job 1 output, kept INCOMING_RETENTION_DAYS
+        │   ├── PBB/*.IMG
+        │   ├── PIBB/*.IMG
+        │   ├── _FETCH_COMPLETE.json  # Every file + size; job 2 starts from this
+        │   └── .fetch.lock
+        ├── batches/<date>/           # Job 2 output, kept BATCH_RETENTION_DAYS
+        │   ├── manifest.db           # SQLite source of truth
+        │   ├── .lock                 # Single-runner lock
+        │   ├── completion/           # Durable per-cheque completion records
+        │   ├── tmp/                  # Temporary JPEGs (auto-cleaned)
+        │   ├── <date>_output.csv
+        │   ├── <date>_failed.csv
+        │   ├── _BATCH_COMPLETE.json  # Nothing left to retry (retention may delete the day)
+        │   └── <seq>-<name>/         # Per-cheque artifact folders (SAVE_ARTIFACTS=true)
+        └── logs/<date>_job1.log, <date>_job2.log
 ```
-
-`script.py` is an independent, offline **YOLO signature test bench** with its own CLI flags (`--conf-threshold`, `--imgsz`, `--target-min-dim`, …). It reads from `Upload/` and writes to `Output/`, and is useful for tuning the signature model without running the full pipeline.
 
 ---
 
@@ -845,7 +773,7 @@ With the defaults (`0.40` utilisation, `8` reserved cores):
 | 64 | 22 |
 | 128 | 48 |
 
-**Why `THREADS_PER_WORKER=1` matters.** Native libraries (OpenMP, MKL, BLAS, Paddle, torch) each start their own thread pool. Without a cap, 25 workers × 16 threads would fight over the same cores. `run.py` sets `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` / `NUMEXPR_NUM_THREADS` *before* importing torch, then also limits OpenCV, torch, and Paddle inside each worker. Keep `workers × threads_per_worker` at or below the core count.
+**Why `THREADS_PER_WORKER=1` matters.** Native libraries (OpenMP, MKL, BLAS, Paddle, torch) each start their own thread pool. Without a cap, 25 workers × 16 threads would fight over the same cores. Job 2 sets `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` / `NUMEXPR_NUM_THREADS` *before* importing torch, then also limits OpenCV, torch, and Paddle inside each worker. Keep `workers × threads_per_worker` at or below the core count.
 
 **Warm-up.** Every worker pre-loads the YOLO model, PaddleOCR engine, and digit CNN when it starts, so the first cheque is not penalised.
 
@@ -862,49 +790,51 @@ With the defaults (`0.40` utilisation, `8` reserved cores):
 
 ```mermaid
 flowchart TD
-    S(["run.py starts"]) --> L{"Lock free?"}
+    S(["Job 2 starts"]) --> F{"_FETCH_COMPLETE.json?"}
+    F -- no --> Z["Exit 3: job 1 has not finished"]
+    F -- yes --> V["Check every listed file and size"]
+    V --> L{"Lock free?"}
     L -- no --> X["Abort: batch already running"]
     L -- yes --> A["Clean leftover temp JPEGs"]
-    A --> B["Stage and verify ZIP"]
-    B --> C["Validate inventory"]
-    C --> D{"Manifest exists?"}
-    D -- "yes, different ZIP hash" --> Y["Abort: use a new batch ID"]
-    D -- "yes, same ZIP" --> E["Reset IN_PROGRESS to PENDING"]
-    D -- no --> F["Create manifest, seed PENDING"]
-    F --> E
+    A --> D{"Manifest exists?"}
+    D -- "yes, different file set" --> Y["Abort: day was fetched again"]
+    D -- "yes, same file set" --> E["Reset IN_PROGRESS to PENDING"]
+    D -- no --> G0["Create manifest, seed PENDING"]
+    G0 --> E
     E --> G["Rebuild output CSV from DONE rows"]
     G --> H["Import completion records<br/>from workers that finished before the crash"]
     H --> I["Process remaining cheques"]
 ```
 
-- **Per-cheque isolation.** A corrupt image, an unreadable `.img`, or a model exception is caught per cheque. It is recorded in the manifest with its error text (truncated to 4000 characters) and the batch continues.
+- **Per-file fetch retries.** A failed download is retried up to `FETCH_FILE_ATTEMPTS` times on a fresh connection; any file still missing keeps `_FETCH_COMPLETE.json` from being written, so job 2 never sees a partial day.
+- **Per-cheque isolation.** A corrupt image, an unreadable `.IMG`, or a model exception is caught per cheque. It is recorded in the manifest with its error text (truncated to 4000 characters) and the batch continues.
 - **Worker crash safety.** If a worker process dies, the future's exception is captured and the cheque is marked failed rather than crashing the runner. Anything left `IN_PROGRESS` is reset on the next run.
-- **Atomic writes everywhere.** `result.json`, completion records, and rebuilt CSVs are written to a temp file, fsynced, then swapped in with `os.replace`, so readers never see a partial file.
+- **Atomic writes everywhere.** Downloaded files, markers, `result.json`, completion records, and rebuilt CSVs are written to a temp file, then swapped in with `os.replace`, so readers never see a partial file.
 - **SQLite durability.** The manifest uses WAL journaling with `synchronous=FULL`.
 - **Bounded retries.** Failures are retried across runs up to `MAX_ATTEMPTS`; after that they are parked in the failed CSV for a human instead of looping forever.
-- **Safe cleanup.** The staged ZIP is deleted only when no cheque is pending and none has permanently failed.
-- **Web mode isolation.** One failing image emits `cheque_error`; the queue always receives its end-of-stream sentinel via `finally`, so the browser is never left hanging.
+- **Safe cleanup.** Retention deletes only date-named folders of finished days.
 
 ---
 
 ## 🔒 Security Notes
 
-- Uploads are restricted to PNG / JPEG / TIFF, size-limited while streaming, verified with Pillow, and saved under a random UUID name. Uploaded files are never executed.
-- Batch and run IDs are validated with a strict pattern (`[A-Za-z0-9_-]{1,80}`), and artifact serving checks that the resolved path stays **inside** the requested run folder, preventing path traversal.
-- ZIP members with absolute paths or `..` segments are rejected before any processing.
-- The app has **no authentication**. Deploy behind authentication and TLS (for example a reverse proxy or the bank's SSO gateway) before exposing it beyond `localhost`, since cheque images and extracted data are sensitive.
-- Artifacts contain full cheque images. Apply your organisation's retention policy to `data/batches/`, and restrict access to that folder.
+- SFTP credentials live only in `.env`, which is git-ignored. Prefer an SSH key (`SFTP_KEY_PATH`) over a password.
+- Job 1 refuses servers whose host key is not in `known_hosts` (no automatic trust), so it cannot be redirected to an impostor server.
+- The source server is only read; nothing there is changed.
+- Only `.IMG` regular files are copied, each into its bank's folder under its own name; job 2 rejects any listed entry that is not `<bank>/<name>.IMG`.
+- Cheque images and extracted data are sensitive. Restrict access to `data/`, and keep the retention settings in line with your organisation's policy.
 
 ---
 
 ## ⚠️ Known Limitations
 
-- **SFTP is not implemented.** `INCOMING_TRANSPORT` accepts only `local`; the validator rejects anything else so the gap is never silent.
+- **Batch date is a placeholder.** Without `--date`, the jobs use today minus `DATE_OFFSET_DAYS` until the real batch date is confirmed.
+- **The trigger file's name and location are not confirmed yet.** `SOURCE_TRIGGER_PATTERN` must be set before job 1 can run unattended.
 - **A date is always read as six digits.** The classifier is forced to output six slots, so a genuinely blank date field still yields a best-guess string. Rely on `date_status`, `date_confidence`, and calendar validation to catch these. There is not yet a dedicated "no date present" status.
 - **Signature detection is presence-only**, not verification against a specimen.
 - **Template-specific tuning.** Search zones and the date-label logic are calibrated to the Public Bank cheque layout. Other layouts may need adjusted zone fractions and label aliases.
-- **Payee and amount are not extracted.** `field_extraction.py` contains simple heuristics but is not part of the current pipeline.
-- **Accuracy scoring is web-mode only.** Batch mode records results but does not compare them to ground truth.
+- **Payee and amount are not extracted.**
+- **No accuracy scoring.** Results are recorded but not compared to ground truth.
 - **Retries happen across runs**, not inside a single run (see [Cheque lifecycle](#cheque-lifecycle)).
 
 ---
@@ -913,15 +843,18 @@ flowchart TD
 
 | Symptom | Likely cause | Fix |
 | :--- | :--- | :--- |
+| Job 1: `... is not in known_hosts` (exit 2) | The source server's key has not been trusted yet | Check the fingerprint with the server's team, then `ssh-keyscan -p 22 <server> >> ~/.ssh/known_hosts`. |
+| Job 1: `SFTP login ... refused` (exit 2) | Wrong user, password or key | Fix `SFTP_USERNAME` / `SFTP_PASSWORD` / `SFTP_KEY_PATH`. |
+| Job 1: timeout / connection refused (exit 1) | Firewall or wrong host/port | From the server: `nc -vz <server-ip> 22`. Ask the network team to open the port. |
+| Job 1: `SOURCE_TRIGGER_PATTERN is not set` (exit 2) | Trigger path not configured | Set it in `.env`, or run by hand with `--skip-trigger`. |
+| Job 1: `No trigger file for ... by 20:00` (exit 1) | The source has not finished the day | Rerun later; check with the source team. |
+| Job 1: `N file(s) not copied` (exit 1) | Network errors on some files | Rerun; only the missing files are copied. |
+| Job 2: `No _FETCH_COMPLETE.json` (exit 3) | Job 1 has not finished the day | Run job 1 first (check its log). |
+| Job 2: `... does not match _FETCH_COMPLETE.json` | Files deleted or changed after fetching | `python jobs/job1_fetch_cheques.py --date <date> --force`. |
+| Job 2: `... belongs to a different set of files` | The day was fetched again (`--force`) after processing began, and the file list changed | Move `data/batches/<date>/` away and run job 2 again to process the day from the start. |
+| `Already running (lock: …)` | Another run owns the day, or a previous one was killed abruptly | Wait for the other run; the lock is released when the process exits. |
 | `FileNotFoundError: YOLO model missing` | Weights not at `YOLO_MODEL_PATH` | Place the file, fix the path, or set `HF_YOLO_REPO_ID` + `HF_YOLO_FILENAME`. |
 | PaddleOCR tries to download models / fails offline | OCR models not found in `OCR_MODELS_DIR` | Confirm `en_PP-OCRv3_det_infer` and `en_PP-OCRv3_rec_infer` exist under that folder. |
-| `Batch ZIP not found` | ZIP name or location is wrong | Name it `YYYYMMDD_cheques.zip`, place it in `data/incoming/`, and match `--batch-id`. |
-| `Batch is already running (lock: …)` | Another `run.py` owns the batch, or a previous one was killed abruptly | Wait for the other run; the lock is released when the process exits. |
-| `ZIP contains no .img files under PBB/ or PIBB/` | Wrong folder layout | Put `.img` files under a top-level `PBB/` or `PIBB/` folder. |
-| `Existing manifest belongs to a different ZIP` | Same batch ID reused with a different ZIP | Use a new `--batch-id`, or delete that batch folder to start over. |
-| `ZIP inventory differs from the existing manifest` | The ZIP contents changed after the batch began | Use a new batch ID. Resuming would be unsafe. |
-| Web result card shows an error mentioning `fields` (`UndefinedError`) | `_cheque_card.html` still references `result.fields.payee_candidate` / `amount_candidate`, which the pipeline no longer produces | Remove those two metric blocks from the template, or add a `fields` entry back into the result. Batch mode is unaffected. |
-| Web page shows no images / results vanish | `SAVE_ARTIFACTS=false` | Set `SAVE_ARTIFACTS=true` for the web UI. |
-| Dates frequently `needs_review` | Labels not found, or crop misaligned | Open the batch's `date/crop.png` and `text/annotated.png` to see what was found, then adjust the `DATE_*` and `OCR_ZONE_*` settings. |
-| Signatures missed | Zone or threshold too tight | Check the orange search zone on `signature/annotated.png`; adjust `SIGNATURE_ZONE_*` or lower `SIGNATURE_DECISION_THRESHOLD`. |
+| Dates frequently `needs_review` | Labels not found, or crop misaligned | Rerun a sample with `SAVE_ARTIFACTS=true` and open `date/crop.png` and `text/annotated.png`, then adjust the `DATE_*` and `OCR_ZONE_*` settings. |
+| Signatures missed | Zone or threshold too tight | With `SAVE_ARTIFACTS=true`, check the orange search zone on `signature/annotated.png`; adjust `SIGNATURE_ZONE_*` or lower `SIGNATURE_DECISION_THRESHOLD`. |
 | Machine sluggish during a batch | Too many workers or threads | Lower `WORKER_COUNT` or raise `RESERVED_LOGICAL_CORES`; keep `THREADS_PER_WORKER=1`. |

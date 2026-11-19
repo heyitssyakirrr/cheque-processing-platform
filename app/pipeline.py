@@ -73,7 +73,7 @@ def process(
     sequence: int,
     source_name: str,
 ) -> tuple[str, dict[str, Any]]:
-    """Process one uploaded cheque and persist all intermediate artifacts."""
+    """Process one cheque image; with SAVE_ARTIFACTS, also persist every intermediate artifact."""
     run_id, run_dir = _create_run_directory(batch_id, sequence, source_name)
     timings: dict[str, float] = {}
     mark = time.perf_counter()

@@ -108,7 +108,7 @@ def prepare_signature_image(
     `options.max_long_edge` -- the latter is what date_extraction.py's crop
     geometry is calibrated against, so it can't move. Signature detection
     has no such dependency and benefits from more resolution (matches the
-    max_dim=3000 already validated in script.py), hence its own cap.
+    max_dim=3000 already validated in the earlier standalone signature test), hence its own cap.
     """
     height, width = image_bgr.shape[:2]
     short_edge, long_edge = min(height, width), max(height, width)

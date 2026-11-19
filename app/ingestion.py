@@ -1,86 +1,91 @@
-"""ZIP staging, validation, inventory and single-run locking for batch input."""
+"""The fetched day folder: its completion marker, inventory, and single-run locking.
+
+Job 1 copies one day's .IMG files into
+
+    data/incoming/<YYYYMMDD>/<bank>/<name>.IMG
+
+and writes ``_FETCH_COMPLETE.json`` there last, listing every file and its
+size. Job 2 only starts from that marker, and checks every listed file is
+on disk with the same size before processing anything.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
-import shutil
-import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+FETCH_MARKER = "_FETCH_COMPLETE.json"
 
 
 @dataclass(frozen=True)
 class InventoryItem:
-    cheque_id: str
+    cheque_id: str      # "<bank>/<name>.IMG", unique within the day
     bank_code: str
-    zip_member: str
+    source_path: str    # relative to the day folder (same as cheque_id)
     sequence: int
-    crc: int
     size: int
 
 
-def sha256_file(path: Path) -> str:
+class FetchNotComplete(RuntimeError):
+    """The day folder has no completion marker yet (job 1 has not finished)."""
+
+
+def is_image_name(name: str) -> bool:
+    """The source writes upper-case .IMG; Linux is case-sensitive, so match any case."""
+    return name.lower().endswith(".img") and not name.startswith(".")
+
+
+def write_json_atomic(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as file:
+        json.dump(value, file, indent=1)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary, path)
+
+
+def read_fetch_marker(day_dir: Path) -> dict[str, Any]:
+    marker = day_dir / FETCH_MARKER
+    if not marker.is_file():
+        raise FetchNotComplete(f"No {FETCH_MARKER} in {day_dir}: job 1 has not finished this day")
+    return json.loads(marker.read_text(encoding="utf-8"))
+
+
+def inventory_day(day_dir: Path, banks: list[str]) -> list[InventoryItem]:
+    """The day's cheques, from job 1's marker, after checking each file on disk."""
+    marker = read_fetch_marker(day_dir)
+    files: dict[str, int] = marker["files"]
+    problems = []
+    items = []
+    for cheque_id in sorted(files):
+        parts = cheque_id.split("/")
+        if len(parts) != 2 or parts[0] not in banks or not is_image_name(parts[1]) or ".." in parts:
+            problems.append(f"unexpected entry {cheque_id!r}")
+            continue
+        path = day_dir / parts[0] / parts[1]
+        if not path.is_file():
+            problems.append(f"{cheque_id} is missing")
+        elif path.stat().st_size != files[cheque_id]:
+            problems.append(f"{cheque_id} is {path.stat().st_size} bytes, the source had {files[cheque_id]}")
+        items.append(InventoryItem(cheque_id, parts[0], cheque_id, len(items) + 1, files[cheque_id]))
+    if problems:
+        shown = "; ".join(problems[:10]) + (f"; and {len(problems) - 10} more" if len(problems) > 10 else "")
+        raise RuntimeError(f"{day_dir} does not match {FETCH_MARKER} ({shown}). Rerun job 1 with --force.")
+    return items
+
+
+def fingerprint(items: list[InventoryItem]) -> str:
+    """Identifies the day's file set, so a resume never mixes two different fetches."""
     digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
+    for item in items:
+        digest.update(f"{item.cheque_id}\t{item.size}\n".encode("utf-8"))
     return digest.hexdigest()
-
-
-def stage_local_zip(source: Path, destination: Path) -> Path:
-    """Copy a source ZIP once, never exposing a partially copied destination."""
-    if destination.exists():
-        return destination
-    if not source.is_file():
-        raise FileNotFoundError(f"Batch ZIP not found: {source}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    partial = destination.with_suffix(destination.suffix + ".part")
-    with source.open("rb") as src, partial.open("wb") as dst:
-        shutil.copyfileobj(src, dst, length=1024 * 1024)
-        dst.flush()
-        os.fsync(dst.fileno())
-    if partial.stat().st_size != source.stat().st_size:
-        partial.unlink(missing_ok=True)
-        raise IOError("Staged ZIP size does not match source")
-    os.replace(partial, destination)
-    return destination
-
-
-def inventory_zip(path: Path) -> list[InventoryItem]:
-    """Return a stable, safe inventory without extracting ZIP members."""
-    with zipfile.ZipFile(path) as archive:
-        corrupt = archive.testzip()
-        if corrupt:
-            raise zipfile.BadZipFile(f"ZIP CRC validation failed for {corrupt!r}")
-        candidates: list[zipfile.ZipInfo] = []
-        names: set[str] = set()
-        for info in archive.infolist():
-            name = info.filename.replace("\\", "/")
-            parts = [part for part in name.split("/") if part]
-            if name.startswith("/") or ".." in parts:
-                raise ValueError(f"Unsafe ZIP member path: {info.filename!r}")
-            if info.is_dir() or not name.lower().endswith(".img"):
-                continue
-            if len(parts) < 2 or parts[0] not in {"PBB", "PIBB"}:
-                raise ValueError(f"Cheque must be under PBB/ or PIBB/: {info.filename!r}")
-            if name in names:
-                raise ValueError(f"Duplicate ZIP member: {info.filename!r}")
-            names.add(name)
-            candidates.append(info)
-    candidates.sort(key=lambda item: item.filename.replace("\\", "/"))
-    return [
-        InventoryItem(
-            cheque_id=info.filename.replace("\\", "/"),
-            bank_code=info.filename.replace("\\", "/").split("/", 1)[0],
-            zip_member=info.filename,
-            sequence=index,
-            crc=info.CRC,
-            size=info.file_size,
-        )
-        for index, info in enumerate(candidates, start=1)
-    ]
 
 
 @contextmanager
@@ -99,7 +104,7 @@ def batch_lock(path: Path):
             try:
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError as error:
-                raise RuntimeError(f"Batch is already running (lock: {path})") from error
+                raise RuntimeError(f"Already running (lock: {path})") from error
             try:
                 yield
             finally:
@@ -114,7 +119,7 @@ def batch_lock(path: Path):
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as error:
-                raise RuntimeError(f"Batch is already running (lock: {path})") from error
+                raise RuntimeError(f"Already running (lock: {path})") from error
             try:
                 yield
             finally:

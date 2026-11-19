@@ -1,24 +1,33 @@
-"""Resumable ZIP batch runner.
+"""Job 2: process one day's fetched cheques, resumably.
 
-Usage on a laptop: put ``20260916_cheques.zip`` in ``data/incoming`` and run
-``python run.py --batch-id 20260916``.  The live output is written to
-``data/batches/20260916/20260916_output.csv``.
+    python jobs/job2_process_cheques.py              today minus DATE_OFFSET_DAYS
+    python jobs/job2_process_cheques.py --date 20261119
+
+Reads data/incoming/<date>/ (written by job 1; refuses to start until its
+_FETCH_COMPLETE.json exists) and writes data/batches/<date>/<date>_output.csv
+as cheques finish. Run the same command again to resume after a crash.
+
+Exit codes: 0 all done, 1 cheques left to retry (run again), 2 done but some
+cheques permanently failed (see <date>_failed.csv), 3 job 1 has not finished
+the day yet.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
 import uuid
-import zipfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 
-from app.settings import settings
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.settings import settings  # noqa: E402
 
 if settings.threads_per_worker:
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
@@ -26,12 +35,17 @@ if settings.threads_per_worker:
 
 import torch  # noqa: E402
 
-from app.ingestion import batch_lock, inventory_zip, sha256_file, stage_local_zip  # noqa: E402
+from app.batch_date import add_date_argument, default_batch_date  # noqa: E402
+from app.ingestion import FetchNotComplete, batch_lock, fingerprint, inventory_day, write_json_atomic  # noqa: E402
+from app.job_log import setup_job_log  # noqa: E402
 from app.manifest import Manifest  # noqa: E402
 from app.pipeline import process  # noqa: E402
+from app.retention import BATCH_MARKER, apply_retention  # noqa: E402
 from app.services import digit_classifier, signature_detection, text_detection  # noqa: E402
 from app.services.img_conversion import convert_img_bytes_to_jpg  # noqa: E402
 from app.services.preprocessing import PreprocessOptions  # noqa: E402
+
+logger = logging.getLogger("job2")
 
 
 def _warm_up() -> float:
@@ -71,15 +85,14 @@ def _process_one(task: dict) -> dict:
     started, counter = datetime.now(), time.perf_counter()
     jpeg = Path(task["tmp_dir"]) / f"{uuid.uuid4().hex}.jpg"
     try:
-        with zipfile.ZipFile(task["zip_path"]) as archive:
-            raw = archive.read(task["zip_member"])
+        raw = Path(task["image_path"]).read_bytes()
         convert_img_bytes_to_jpg(raw, jpeg)
         _, result = process(jpeg, task["options"], settings.signature_decision_threshold, 450,
-                            task["batch_id"], task["sequence"], Path(task["zip_member"]).name)
+                            task["batch_id"], task["sequence"], Path(task["source_path"]).name)
         timings = result.get("timings", {})
         row = {
             "batch_id": task["batch_id"], "cheque_id": task["cheque_id"], "bank_code": task["bank_code"],
-            "sequence": task["sequence"], "filename": Path(task["zip_member"]).name,
+            "sequence": task["sequence"], "filename": Path(task["source_path"]).name,
             "signature_detected": "YES" if result["signature"]["exists"] else "NO",
             "date": result["date"]["date"], "start_time": started.strftime("%Y-%m-%d %H:%M:%S"),
             "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -91,7 +104,7 @@ def _process_one(task: dict) -> dict:
         _atomic_json(_completion_path(Path(task["completion_dir"]), task["cheque_id"]), row)
         return {"cheque_id": task["cheque_id"], "ok": True}
     except Exception as error:  # A bad scan must not end the whole batch.
-        return {"cheque_id": task["cheque_id"], "ok": False, "error": str(error)}
+        return {"cheque_id": task["cheque_id"], "ok": False, "error": f"{type(error).__name__}: {error}"}
     finally:
         jpeg.unlink(missing_ok=True)
 
@@ -109,10 +122,10 @@ def _import_completions(manifest: Manifest, directory: Path, output_csv: Path) -
     return imported
 
 
-def _task(row, batch_id: str, zip_path: Path, options: PreprocessOptions, tmp_dir: Path, completion_dir: Path) -> dict:
-    return {"cheque_id": row["cheque_id"], "bank_code": row["bank_code"], "zip_member": row["zip_member"],
-            "sequence": row["sequence"], "batch_id": batch_id, "zip_path": str(zip_path), "options": options,
-            "tmp_dir": str(tmp_dir), "completion_dir": str(completion_dir)}
+def _task(row, batch_id: str, day_dir: Path, options: PreprocessOptions, tmp_dir: Path, completion_dir: Path) -> dict:
+    return {"cheque_id": row["cheque_id"], "bank_code": row["bank_code"], "source_path": row["source_path"],
+            "image_path": str(day_dir / row["source_path"]), "sequence": row["sequence"], "batch_id": batch_id,
+            "options": options, "tmp_dir": str(tmp_dir), "completion_dir": str(completion_dir)}
 
 
 def _handle_result(manifest: Manifest, result: dict, completion_dir: Path, output_csv: Path) -> None:
@@ -123,18 +136,25 @@ def _handle_result(manifest: Manifest, result: dict, completion_dir: Path, outpu
         manifest.append_output(output_csv, cheque_id)
     else:
         manifest.mark_failure(cheque_id, result["error"])
+        logger.warning("%s failed: %s", cheque_id, result["error"])
+
+
+def _progress(done: int, total: int, task: dict, ok: bool) -> None:
+    # Every cheque on a small run; every 500th (and the last) on a 20,000-cheque day.
+    if total <= 50 or done % 500 == 0 or done == total:
+        logger.info("[%d/%d] %s -> %s", done, total, task["cheque_id"], "DONE" if ok else "FAILED")
 
 
 def _run_tasks(manifest: Manifest, tasks: list[dict], workers: int, completion_dir: Path, output_csv: Path) -> None:
     if not tasks:
         return
     if workers == 1:
-        print(f"Warming up models... ({_warm_up():.2f}s)", flush=True)
+        logger.info("Warming up models... (%.2fs)", _warm_up())
         for index, task in enumerate(tasks, 1):
             manifest.mark_in_progress(task["cheque_id"])
             result = _process_one(task)
             _handle_result(manifest, result, completion_dir, output_csv)
-            print(f"[{index}/{len(tasks)}] {task['zip_member']} -> {'DONE' if result['ok'] else 'FAILED'}", flush=True)
+            _progress(index, len(tasks), task, result["ok"])
         return
 
     capacity, iterator, completed = workers * settings.batch_inflight_multiplier, iter(tasks), 0
@@ -160,29 +180,25 @@ def _run_tasks(manifest: Manifest, tasks: list[dict], workers: int, completion_d
                     result = {"cheque_id": task["cheque_id"], "ok": False, "error": str(error)}
                 _handle_result(manifest, result, completion_dir, output_csv)
                 completed += 1
-                print(f"[{completed}/{len(tasks)}] {task['zip_member']} -> {'DONE' if result['ok'] else 'FAILED'}", flush=True)
+                _progress(completed, len(tasks), task, result["ok"])
                 submit()
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Process one daily cheque ZIP resumably.")
-    parser.add_argument("--batch-id", default=f"{datetime.now():%Y%m%d}", help="Date in YYYYMMDD form")
-    args = parser.parse_args(argv)
-    batch_id = args.batch_id
-    if not (len(batch_id) == 8 and batch_id.isdigit()):
-        parser.error("--batch-id must be YYYYMMDD")
-    source_zip = settings.incoming_dir / settings.batch_zip_name_pattern.format(date=batch_id)
-    batch_dir, completion_dir, tmp_dir = settings.batch_dir(batch_id), settings.batch_dir(batch_id) / "completion", settings.batch_dir(batch_id) / "tmp"
+def run_batch(batch_id: str) -> int:
+    day_dir = settings.incoming_day_dir(batch_id)
+    batch_dir = settings.batch_dir(batch_id)
+    completion_dir, tmp_dir = batch_dir / "completion", batch_dir / "tmp"
     output_csv, failed_csv = batch_dir / f"{batch_id}_output.csv", batch_dir / f"{batch_id}_failed.csv"
+    try:
+        inventory = inventory_day(day_dir, settings.banks)
+    except FetchNotComplete as error:
+        logger.error("%s", error)
+        return 3
     tmp_dir.mkdir(parents=True, exist_ok=True)
     with batch_lock(batch_dir / ".lock"):
         for leftover in tmp_dir.glob("*.jpg"):
             leftover.unlink(missing_ok=True)
-        zip_path = stage_local_zip(source_zip, settings.batch_zip_path(batch_id))
-        inventory = inventory_zip(zip_path)
-        if not inventory:
-            raise RuntimeError("ZIP contains no .img files under PBB/ or PIBB/")
-        manifest = Manifest(batch_dir / "manifest.db", batch_id, sha256_file(zip_path), settings.max_attempts)
+        manifest = Manifest(batch_dir / "manifest.db", batch_id, fingerprint(inventory), settings.max_attempts)
         try:
             manifest.seed(inventory)
             manifest.recover_interrupted()
@@ -190,24 +206,50 @@ def main(argv: list[str] | None = None) -> int:
             recovered = _import_completions(manifest, completion_dir, output_csv)
             todo = manifest.todo()
             workers = min(settings.recommend_workers(os.cpu_count() or 1, len(todo)), len(todo)) if todo else 1
-            print(f"Batch {batch_id}: {len(inventory)} cheques; {len(todo)} to process; {workers} worker(s).", flush=True)
+            by_bank = {bank: sum(1 for item in inventory if item.bank_code == bank) for bank in settings.banks}
+            logger.info("Batch %s: %d cheques %s; %d to process; %d worker(s).",
+                        batch_id, len(inventory), by_bank, len(todo), workers)
             if recovered:
-                print(f"Recovered {recovered} durable completion(s).", flush=True)
+                logger.info("Recovered %d durable completion(s).", recovered)
             options = PreprocessOptions(
                 max_long_edge=settings.preprocess_max_long_edge,
                 contrast=settings.preprocess_contrast,
                 denoise=settings.preprocess_denoise,
                 deskew=settings.preprocess_deskew,
             )
-            _run_tasks(manifest, [_task(row, batch_id, zip_path, options, tmp_dir, completion_dir) for row in todo], workers, completion_dir, output_csv)
+            started = time.perf_counter()
+            _run_tasks(manifest, [_task(row, batch_id, day_dir, options, tmp_dir, completion_dir) for row in todo],
+                       workers, completion_dir, output_csv)
             manifest.write_failures(failed_csv)
             counts = manifest.counts()
-            print(f"Output: {output_csv}\nStatus: {counts}", flush=True)
-            if not manifest.todo() and not manifest.failures() and settings.cleanup_zip_after_batch:
-                zip_path.unlink(missing_ok=True)
-            return 1 if manifest.todo() else (2 if manifest.failures() else 0)
+            left, failed = len(manifest.todo()), len(manifest.failures())
+            logger.info("Output: %s", output_csv)
+            logger.info("Status: %s (%.0fs this run)", counts, time.perf_counter() - started)
+            if not left:
+                write_json_atomic(batch_dir / BATCH_MARKER, {
+                    "batch_id": batch_id, "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    "counts": counts,
+                })
+            if failed:
+                logger.warning("%d cheque(s) permanently failed: %s", failed, failed_csv)
+            return 1 if left else (2 if failed else 0)
         finally:
             manifest.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Job 2: process one day's fetched cheques, resumably.")
+    add_date_argument(parser)
+    args = parser.parse_args(argv)
+    batch_id = args.date or default_batch_date()
+    setup_job_log("job2", batch_id)
+    code = run_batch(batch_id)
+    try:
+        apply_retention()
+    except Exception:  # Housekeeping must never change the batch's result.
+        logger.exception("Retention cleanup failed")
+    logger.info("Exit code %d", code)
+    return code
 
 
 if __name__ == "__main__":
