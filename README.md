@@ -99,6 +99,7 @@ flowchart LR
 | `signature_detected` | `YES` / `NO`. Whether at least one YOLO detection met the decision threshold. |
 | Signature detections | Bounding boxes (`x1, y1, x2, y2`) and confidence for up to 2 candidates. |
 | `date` | Handwritten date formatted as `DD/MM/YY`. |
+| `valid_date` | `YES` / `NO`. Whether `date` is a real calendar date. |
 | `date_status` | `date_candidate` (valid calendar date), `needs_review` (best guess, invalid or uncertain), or `empty_crop`. |
 | `raw_digits` | The six classified digits with no separators, e.g. `160926`. |
 | `date_confidence` | The **weakest** per-digit probability (a date is only as trustworthy as its least certain digit). |
@@ -634,6 +635,7 @@ One row per successfully processed cheque, appended live and fsynced.
 | `filename` | The `.IMG` file name. |
 | `signature_detected` | `YES` / `NO`. |
 | `date` | Handwritten date, `DD/MM/YY`. |
+| `valid_date` | `YES` if `date` is a real calendar date (two-digit years are 20YY), else `NO` — e.g. `88/55/28` or a blank date box. |
 | `start_time`, `end_time` | Wall-clock processing window for this cheque. |
 | `duration_seconds` | Total processing time. |
 | `pixels` | Original image size, `WIDTHxHEIGHT`. |

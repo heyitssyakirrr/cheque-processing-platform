@@ -8,12 +8,31 @@ every ``<run_id>/original/cheque.png`` copied as ``<run_id>.png``.
 from __future__ import annotations
 
 import argparse
+import csv
 import shutil
 from datetime import datetime
 
-from Cheque_Processing.app.settings import settings
+from app.services.date_extraction import is_valid_date
+from app.settings import settings
 
 OUTPUT_FOLDER_NAME = "batch output"
+
+
+def _copy_with_valid_date(source, target) -> None:
+    """Copy the output CSV, adding a valid_date (YES/NO) column right after
+    date when the batch was processed before that column existed."""
+    with source.open(newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        fields = list(reader.fieldnames or [])
+        rows = list(reader)
+    if "valid_date" not in fields and "date" in fields:
+        fields.insert(fields.index("date") + 1, "valid_date")
+        for row in rows:
+            row["valid_date"] = "YES" if is_valid_date(row.get("date", "")) else "NO"
+    with target.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
 
     export_dir = batch_dir / OUTPUT_FOLDER_NAME
     export_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(output_csv, export_dir / output_csv.name)
+    _copy_with_valid_date(output_csv, export_dir / output_csv.name)
 
     copied = 0
     for png in sorted(batch_dir.glob("*/original/cheque.png")):

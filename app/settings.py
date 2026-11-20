@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     is found, the other's edge is estimated as this many typical
     single-line-heights away, plus this calibrated gap below."""
 
-    date_field_vertical_safety_pad_ratio: float = 0.15
+    date_field_vertical_safety_pad_ratio: float = 0.3
     """Small safety margin added above/below the measured label span, since
     handwritten digits can slightly overshoot the printed label's own
     height. Deliberately much smaller than the old fixed multipliers --
@@ -126,17 +126,19 @@ class Settings(BaseSettings):
     with both edges measured directly this only needs to cover natural
     handwriting variance."""
 
-    date_field_bottom_extra_pad_ratio: float = 0.35
+    date_field_bottom_extra_pad_ratio: float = 0.45
     """Extra padding added only below DATE's own bottom edge, on top of the
     symmetric safety pad above. Handwritten descenders and closed loops (a
     looped '6' or '2') extend further down than a printed line's own bottom
     edge predicts -- asymmetric on purpose; the top edge needs no
     equivalent since TARIKH's top edge has no handwriting above it."""
 
-    date_field_width_typical_heights: float = 17.0
+    date_field_width_typical_heights: float = 20.0
     """Horizontal crop width, expressed in multiples of the document's
     typical single-line text height (a stable, format-invariant reference --
-    see `_typical_line_height`), not the anchor label's own box height."""
+    see `_typical_line_height`), not the anchor label's own box height.
+    17 cut off the sixth digit box on Public Bank cheques; 21 starts to
+    take in the hatched pattern at the cheque's right edge as ink."""
 
     date_field_max_width_fraction: float = 0.55
     date_field_max_height_fraction: float = 0.32

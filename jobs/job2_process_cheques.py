@@ -42,6 +42,7 @@ from app.manifest import Manifest  # noqa: E402
 from app.pipeline import process  # noqa: E402
 from app.retention import BATCH_MARKER, apply_retention  # noqa: E402
 from app.services import digit_classifier, signature_detection, text_detection  # noqa: E402
+from app.services.date_extraction import is_valid_date  # noqa: E402
 from app.services.img_conversion import convert_img_bytes_to_jpg  # noqa: E402
 from app.services.preprocessing import PreprocessOptions  # noqa: E402
 
@@ -94,7 +95,9 @@ def _process_one(task: dict) -> dict:
             "batch_id": task["batch_id"], "cheque_id": task["cheque_id"], "bank_code": task["bank_code"],
             "sequence": task["sequence"], "filename": Path(task["source_path"]).name,
             "signature_detected": "YES" if result["signature"]["exists"] else "NO",
-            "date": result["date"]["date"], "start_time": started.strftime("%Y-%m-%d %H:%M:%S"),
+            "date": result["date"]["date"],
+            "valid_date": "YES" if is_valid_date(result["date"]["date"]) else "NO",
+            "start_time": started.strftime("%Y-%m-%d %H:%M:%S"),
             "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "duration_seconds": round(time.perf_counter() - counter, 2), "pixels": result.get("pixels", ""),
             "t_read": timings.get("read", ""), "t_preprocess": timings.get("preprocess", ""),

@@ -13,7 +13,7 @@ from app.ingestion import InventoryItem
 
 OUTPUT_FIELDS = [
     "batch_id", "cheque_id", "bank_code", "sequence", "filename",
-    "signature_detected", "date", "start_time", "end_time",
+    "signature_detected", "date", "valid_date", "start_time", "end_time",
     "duration_seconds", "pixels", "t_read", "t_preprocess",
     "t_signature", "t_ocr", "t_date", "error",
 ]
