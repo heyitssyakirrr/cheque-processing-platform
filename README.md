@@ -599,6 +599,15 @@ Schedule job 1 at the time the source is expected to be ready (for example 18:00
 
 Begin with `WORKER_COUNT=1` and increase only after measuring memory and throughput on the target machine. With one worker the runner processes in-process (no process pool), which is also the easiest mode to debug.
 
+### Checking tools (diagnostics/)
+
+Run from the project folder against a batch already processed with `SAVE_ARTIFACTS=true`. No model is loaded.
+
+| Script | What it does |
+|---|---|
+| `python diagnostics/check_date_crop.py --batch-id 20261113` | Re-crops every cheque's date box with the current settings and writes `data/batches/<id>/date crop check/`: one `<run>.png` per cheque (NEW crop above the OLD `date/crop.png`), `_all_new.png` with every new crop, and `_summary.csv`. |
+| `python export_batch.py --batch-id 20261113` | Copies the output CSV (adding `valid_date` if missing) and every `original/cheque.png` to `data/batches/<id>/batch output/`. |
+
 ### Tests
 
 ```bash

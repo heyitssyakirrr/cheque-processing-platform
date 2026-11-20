@@ -235,6 +235,25 @@ def _write_digit_confidence_csv(output_dir: Path, top_candidates: list[list[tupl
             writer.writerow(row)
 
 
+def find_crop_box(
+    image_shape: tuple[int, ...], lines: list[dict[str, Any]]
+) -> tuple[tuple[int, int, int, int], str, str, bool]:
+    """Where the handwritten date is: (x0, y0, x1, y1), how it was found,
+    the label text it was anchored on, and whether one label line was
+    estimated. Used by `extract` and by diagnostics/check_date_crop.py."""
+    tarikh, date = _find_label_lines(lines, image_shape)
+    if tarikh is None and date is None:
+        return _template_date_zone(image_shape), "Public Bank upper-right fallback", "", False
+    crop_box, bounds_estimated = _right_of_labels(tarikh, date, lines, image_shape)
+    found_texts = [str(line["text"]) for line in (tarikh, date) if line is not None]
+    anchor_text = " / ".join(dict.fromkeys(found_texts))
+    found_labels = [name for name, line in (("TARIKH", tarikh), ("DATE", date)) if line is not None]
+    anchor_mode = "OCR/fuzzy " + "+".join(found_labels) + " anchor"
+    if bounds_estimated:
+        anchor_mode += " (one line estimated from the other)"
+    return crop_box, anchor_mode, anchor_text, bounds_estimated
+
+
 def extract(
     image: np.ndarray,
     lines: list[dict[str, Any]],
@@ -245,20 +264,7 @@ def extract(
     del width
     if settings.save_artifacts:
         output_dir.mkdir(parents=True, exist_ok=True)
-    tarikh, date = _find_label_lines(lines, image.shape)
-    bounds_estimated = False
-    if tarikh is not None or date is not None:
-        crop_box, bounds_estimated = _right_of_labels(tarikh, date, lines, image.shape)
-        found_texts = [str(line["text"]) for line in (tarikh, date) if line is not None]
-        anchor_text = " / ".join(dict.fromkeys(found_texts))
-        found_labels = [name for name, line in (("TARIKH", tarikh), ("DATE", date)) if line is not None]
-        anchor_mode = "OCR/fuzzy " + "+".join(found_labels) + " anchor"
-        if bounds_estimated:
-            anchor_mode += " (one line estimated from the other)"
-    else:
-        crop_box = _template_date_zone(image.shape)
-        anchor_text = ""
-        anchor_mode = "Public Bank upper-right fallback"
+    crop_box, anchor_mode, anchor_text, bounds_estimated = find_crop_box(image.shape, lines)
 
     x0, y0, x1, y1 = crop_box
     crop = image[y0:y1, x0:x1]
