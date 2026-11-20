@@ -61,7 +61,7 @@ def _check_run(run_dir: Path, export_dir: Path) -> tuple[dict, np.ndarray | None
     if not lines:
         row["note"] = "no OCR text saved; fixed upper-right zone used"
 
-    (x0, y0, x1, y1), found_by, label_text, _ = find_crop_box(image.shape, lines)
+    (x0, y0, x1, y1), found_by, label_text, _ = find_crop_box(image, lines)
     row.update(crop_box=f"{x0},{y0},{x1},{y1}", found_by=found_by, label_text=label_text)
     crop = image[y0:y1, x0:x1]
     if crop.size == 0:

@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     is found, the other's edge is estimated as this many typical
     single-line-heights away, plus this calibrated gap below."""
 
-    date_field_vertical_safety_pad_ratio: float = 0.3
+    date_field_vertical_safety_pad_ratio: float = 0.6
     """Small safety margin added above/below the measured label span, since
     handwritten digits can slightly overshoot the printed label's own
     height. Deliberately much smaller than the old fixed multipliers --
@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     with both edges measured directly this only needs to cover natural
     handwriting variance."""
 
-    date_field_bottom_extra_pad_ratio: float = 0.45
+    date_field_bottom_extra_pad_ratio: float = 0.25
     """Extra padding added only below DATE's own bottom edge, on top of the
     symmetric safety pad above. Handwritten descenders and closed loops (a
     looped '6' or '2') extend further down than a printed line's own bottom
@@ -137,8 +137,25 @@ class Settings(BaseSettings):
     """Horizontal crop width, expressed in multiples of the document's
     typical single-line text height (a stable, format-invariant reference --
     see `_typical_line_height`), not the anchor label's own box height.
-    17 cut off the sixth digit box on Public Bank cheques; 21 starts to
-    take in the hatched pattern at the cheque's right edge as ink."""
+    17 cut off the sixth digit box on Public Bank cheques. This is the
+    search area: the right edge is then trimmed to the handwriting (below).
+    """
+
+    date_field_trim_to_ink: bool = True
+    """Trim the crop's right edge to the last handwritten stroke plus
+    `date_field_ink_right_margin_heights`, so the hatched pattern at the
+    cheque's right edge stays out. Strokes are pixels darker than
+    `digit_ink_threshold`, the same test digit_segmentation uses."""
+
+    date_field_ink_right_margin_heights: float = 0.8
+    """Space kept to the right of the last stroke, in typical line heights."""
+
+    date_field_min_width_typical_heights: float = 12.0
+    """The trim never makes the crop narrower than this (protects a faint
+    last digit that is lighter than the ink threshold)."""
+
+    date_field_blank_width_typical_heights: float = 18.0
+    """Crop width when no handwriting is found at all (a blank date box)."""
 
     date_field_max_width_fraction: float = 0.55
     date_field_max_height_fraction: float = 0.32

@@ -235,22 +235,62 @@ def _write_digit_confidence_csv(output_dir: Path, top_candidates: list[list[tupl
             writer.writerow(row)
 
 
+def _trim_right_to_ink(
+    image: np.ndarray, box: tuple[int, int, int, int], typical_height: float
+) -> tuple[tuple[int, int, int, int], str]:
+    """Pull the crop's right edge in to the last handwritten stroke.
+
+    Strokes are connected blobs darker than `digit_ink_threshold` that are
+    big enough to be part of a digit and not wider than a few digits (which
+    would be a printed line). Returns the new box and a short note.
+    """
+    x0, y0, x1, y1 = box
+    crop = image[y0:y1, x0:x1]
+    if crop.size == 0:
+        return box, ""
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    ink = (gray < settings.digit_ink_threshold).astype(np.uint8)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    crop_height = y1 - y0
+    right_edges = [
+        int(left + w)
+        for left, _, w, h, area in stats[1:count]
+        if area >= 25 and h >= 0.08 * crop_height and w <= 2.5 * typical_height
+    ]
+    min_x1 = x0 + typical_height * settings.date_field_min_width_typical_heights
+    if right_edges:
+        new_x1 = x0 + max(right_edges) + typical_height * settings.date_field_ink_right_margin_heights
+        note = "right edge trimmed to handwriting"
+    else:
+        new_x1 = x0 + typical_height * settings.date_field_blank_width_typical_heights
+        note = "no handwriting found; blank-box width used"
+    new_x1 = int(min(x1, max(min_x1, new_x1)))
+    return (x0, y0, new_x1, y1), note
+
+
 def find_crop_box(
-    image_shape: tuple[int, ...], lines: list[dict[str, Any]]
+    image: np.ndarray, lines: list[dict[str, Any]]
 ) -> tuple[tuple[int, int, int, int], str, str, bool]:
     """Where the handwritten date is: (x0, y0, x1, y1), how it was found,
     the label text it was anchored on, and whether one label line was
     estimated. Used by `extract` and by diagnostics/check_date_crop.py."""
+    image_shape = image.shape
     tarikh, date = _find_label_lines(lines, image_shape)
     if tarikh is None and date is None:
         return _template_date_zone(image_shape), "Public Bank upper-right fallback", "", False
     crop_box, bounds_estimated = _right_of_labels(tarikh, date, lines, image_shape)
+    trim_note = ""
+    if settings.date_field_trim_to_ink:
+        typical_height = _typical_line_height(lines) or max(1.0, crop_box[3] - crop_box[1])
+        crop_box, trim_note = _trim_right_to_ink(image, crop_box, typical_height)
     found_texts = [str(line["text"]) for line in (tarikh, date) if line is not None]
     anchor_text = " / ".join(dict.fromkeys(found_texts))
     found_labels = [name for name, line in (("TARIKH", tarikh), ("DATE", date)) if line is not None]
     anchor_mode = "OCR/fuzzy " + "+".join(found_labels) + " anchor"
     if bounds_estimated:
         anchor_mode += " (one line estimated from the other)"
+    if trim_note:
+        anchor_mode += f"; {trim_note}"
     return crop_box, anchor_mode, anchor_text, bounds_estimated
 
 
@@ -264,7 +304,7 @@ def extract(
     del width
     if settings.save_artifacts:
         output_dir.mkdir(parents=True, exist_ok=True)
-    crop_box, anchor_mode, anchor_text, bounds_estimated = find_crop_box(image.shape, lines)
+    crop_box, anchor_mode, anchor_text, bounds_estimated = find_crop_box(image, lines)
 
     x0, y0, x1, y1 = crop_box
     crop = image[y0:y1, x0:x1]
