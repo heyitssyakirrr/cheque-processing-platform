@@ -10,10 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import DATE, TempProject, run  # noqa: E402
 
-from app import fetch, retention  # noqa: E402
-from app.ingestion import FetchNotComplete, fingerprint, inventory_day, write_json_atomic  # noqa: E402
-from app.manifest import Manifest  # noqa: E402
-from app.settings import settings  # noqa: E402
+from Cheque_Processing.app import fetch, retention  # noqa: E402
+from Cheque_Processing.app.ingestion import FetchNotComplete, fingerprint, inventory_day, write_json_atomic  # noqa: E402
+from Cheque_Processing.app.manifest import Manifest  # noqa: E402
+from Cheque_Processing.app.settings import settings  # noqa: E402
 
 
 def _fetched(project: TempProject, pbb: int = 3, pibb: int = 2) -> Path:

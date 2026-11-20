@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from app.settings import settings
+from Cheque_Processing.app.settings import settings
 
 
 def setup_job_log(job: str, batch_id: str) -> logging.Logger:

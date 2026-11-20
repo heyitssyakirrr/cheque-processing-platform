@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from app.settings import settings
+from Cheque_Processing.app.settings import settings
 
 
 @dataclass(frozen=True)

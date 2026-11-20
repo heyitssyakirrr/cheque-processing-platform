@@ -12,8 +12,8 @@ from typing import Any
 import cv2
 import numpy as np
 
-from app.services import digit_classifier, digit_segmentation
-from app.settings import settings
+from Cheque_Processing.app.services import digit_classifier, digit_segmentation
+from Cheque_Processing.app.settings import settings
 
 
 def _normalise(value: str) -> str:

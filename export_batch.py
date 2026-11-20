@@ -12,8 +12,8 @@ import csv
 import shutil
 from datetime import datetime
 
-from app.services.date_extraction import is_valid_date
-from app.settings import settings
+from Cheque_Processing.app.services.date_extraction import is_valid_date
+from Cheque_Processing.app.settings import settings
 
 OUTPUT_FOLDER_NAME = "batch output"
 

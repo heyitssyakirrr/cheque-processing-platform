@@ -20,12 +20,12 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.batch_date import add_date_argument, default_batch_date  # noqa: E402
-from app.fetch import ConfigError, fetch_day  # noqa: E402
-from app.job_log import setup_job_log  # noqa: E402
-from app.settings import settings  # noqa: E402
+from Cheque_Processing.app.batch_date import add_date_argument, default_batch_date  # noqa: E402
+from Cheque_Processing.app.fetch import ConfigError, fetch_day  # noqa: E402
+from Cheque_Processing.app.job_log import setup_job_log  # noqa: E402
+from Cheque_Processing.app.settings import settings  # noqa: E402
 
 logger = logging.getLogger("job1")
 

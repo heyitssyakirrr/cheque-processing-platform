@@ -27,8 +27,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
-from app.ingestion import FETCH_MARKER, batch_lock, is_image_name, write_json_atomic
-from app.settings import settings
+from Cheque_Processing.app.ingestion import FETCH_MARKER, batch_lock, is_image_name, write_json_atomic
+from Cheque_Processing.app.settings import settings
 
 logger = logging.getLogger("job1")
 

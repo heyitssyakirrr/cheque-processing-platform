@@ -7,9 +7,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.settings import settings  # noqa: E402
+from Cheque_Processing.app.settings import settings  # noqa: E402
 
 DATE = "20261119"
 TRIGGER = "{root}/{bank}/{date}/GWC/DONE.TRG"

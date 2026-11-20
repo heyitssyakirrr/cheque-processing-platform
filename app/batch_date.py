@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timedelta
 
-from app.settings import settings
+from Cheque_Processing.app.settings import settings
 
 
 def default_batch_date(today: date | None = None) -> str:

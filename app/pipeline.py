@@ -10,17 +10,17 @@ from typing import Any
 
 import cv2
 
-from app.services.date_extraction import extract as extract_date
-from app.services.preprocessing import (
+from Cheque_Processing.app.services.date_extraction import extract as extract_date
+from Cheque_Processing.app.services.preprocessing import (
     PreprocessOptions,
     crop_date_zone,
     crop_signature_zone,
     prepare_signature_image,
     preprocess,
 )
-from app.services.signature_detection import detect as detect_signatures
-from app.services.text_detection import detect as detect_text
-from app.settings import settings
+from Cheque_Processing.app.services.signature_detection import detect as detect_signatures
+from Cheque_Processing.app.services.text_detection import detect as detect_text
+from Cheque_Processing.app.settings import settings
 
 
 def _safe_name(value: str) -> str:
