@@ -87,86 +87,59 @@ def _find_label_lines(
     return tarikh, date
 
 
-def _vertical_bounds_from_labels(
+def _label_geometry(
     tarikh: dict[str, Any] | None,
     date: dict[str, Any] | None,
-    lines: list[dict[str, Any]],
-) -> tuple[float, float, bool]:
-    """Compute the crop's top/bottom Y directly from the label line(s) found.
-
-    Returns (top_y, bottom_y, was_estimated).
-    """
-    typical_height = _typical_line_height(lines) or 20.0
-    line_gap = typical_height * settings.date_label_line_gap_ratio
-
-    if tarikh is not None and date is not None:
-        _, top_y, _, _ = _bounds(tarikh["box"])
-        _, _, _, bottom_y = _bounds(date["box"])
-        return top_y, bottom_y, False
-
-    if tarikh is not None:
-        _, top_y, _, tarikh_bottom = _bounds(tarikh["box"])
-        estimated_bottom = tarikh_bottom + line_gap + typical_height
-        return top_y, estimated_bottom, True
-
-    _, date_top, _, bottom_y = _bounds(date["box"])  # date is not None here
-    estimated_top = date_top - line_gap - typical_height
-    return estimated_top, bottom_y, True
-
-
-def _typical_line_height(lines: list[dict[str, Any]]) -> float | None:
-    """Robust reference height for one printed line of text on this cheque
-    -- the median height across all detected lines, used as the sizing
-    reference for crop width and padding (see module docstrings in prior
-    versions for the full rationale)."""
-    heights = []
-    for line in lines:
-        text = str(line["text"])
-        if len(_normalise(text)) < 2:
-            continue
-        x0, y0, x1, y1 = _bounds(line["box"])
-        h = y1 - y0
-        if h > 0:
-            heights.append(h)
-    if len(heights) < 3:
-        return None
-    return float(np.median(heights))
-
-
-def _right_of_labels(
-    tarikh: dict[str, Any] | None,
-    date: dict[str, Any] | None,
-    lines: list[dict[str, Any]],
     image_shape: tuple[int, ...],
-) -> tuple[tuple[int, int, int, int], bool]:
-    """Crop tightly around the handwritten date cell, right of TARIKH/DATE."""
+) -> tuple[float, float, float, str]:
+    """Measure the printed TARIKH/DATE label to place the date boxes.
+
+    Returns (unit, anchor_x, top_y, note):
+      unit      the printed width of the word TARIKH, in pixels. Every date
+                box measurement is a multiple of it, so the crop scales with
+                the cheque however big the image is. (The old unit, the
+                median height of every OCR line, also counted the
+                handwritten digits and could be 50% off.)
+      anchor_x  where the first date box starts (TARIKH's right edge)
+      top_y     the top of TARIKH
+    """
+    width = image_shape[1]
+    expected_unit = width * settings.date_label_unit_page_fraction
+    note = ""
+    if tarikh is not None:
+        x0, y0, x1, _ = _bounds(tarikh["box"])
+        letters = len(_normalise(str(tarikh["text"])))
+        unit = x1 - x0
+        if letters > 6:
+            # OCR merged TARIKH with a handwritten digit ("TARIKH3"): keep only
+            # TARIKH's share of the box, so the first digit is not skipped.
+            unit = unit * 6 / letters
+            note = "TARIKH box shortened (merged with other text)"
+        anchor_x, top_y = x0 + unit, y0
+    else:
+        x0, y0, x1, _ = _bounds(date["box"])  # date is not None here
+        unit = (x1 - x0) / settings.date_label_date_width_units
+        anchor_x = x1 + settings.date_label_date_right_gap_units * unit
+        top_y = y0 - settings.date_label_tarikh_height_units * unit
+        note = "TARIKH not found; placed from DATE"
+
+    low, high = settings.date_label_unit_tolerance
+    if not low * expected_unit <= unit <= high * expected_unit:
+        note = (note + "; " if note else "") + f"label width {unit:.0f}px implausible, page width used"
+        unit = expected_unit
+    return unit, anchor_x, top_y, note
+
+
+def _date_row_box(
+    unit: float, anchor_x: float, top_y: float, image_shape: tuple[int, ...]
+) -> tuple[int, int, int, int]:
+    """The six date boxes, from the label measurements (see settings section 3)."""
     height, width = image_shape[:2]
-    top_y, bottom_y, was_estimated = _vertical_bounds_from_labels(tarikh, date, lines)
-    typical_height = _typical_line_height(lines) or max(1.0, bottom_y - top_y)
-
-    right_edges = [_bounds(line["box"])[2] for line in (tarikh, date) if line is not None]
-    label_x1 = max(right_edges)
-
-    safety_pad = typical_height * settings.date_field_vertical_safety_pad_ratio
-    bottom_extra_pad = typical_height * settings.date_field_bottom_extra_pad_ratio
-    crop_y0 = top_y - safety_pad
-    crop_y1 = bottom_y + safety_pad + bottom_extra_pad
-    crop_x0 = label_x1
-    crop_x1 = crop_x0 + typical_height * settings.date_field_width_typical_heights
-
-    max_width = width * settings.date_field_max_width_fraction
-    max_height = height * settings.date_field_max_height_fraction
-    crop_x1 = min(crop_x1, crop_x0 + max_width)
-    if crop_y1 - crop_y0 > max_height:
-        crop_y1 = crop_y0 + max_height
-
-    crop_box = (
-        max(0, int(crop_x0)),
-        max(0, int(crop_y0)),
-        min(width, int(crop_x1)),
-        min(height, int(crop_y1)),
-    )
-    return crop_box, was_estimated
+    x0 = anchor_x + settings.date_row_start_units * unit
+    x1 = anchor_x + settings.date_row_length_units * unit
+    y0 = top_y - settings.date_row_top_pad_units * unit
+    y1 = top_y + settings.date_row_bottom_units * unit
+    return max(0, int(x0)), max(0, int(y0)), min(width, int(x1)), min(height, int(y1))
 
 
 def _template_date_zone(image_shape: tuple[int, ...]) -> tuple[int, int, int, int]:
@@ -197,6 +170,12 @@ def parse_date(value: str) -> dt.date | None:
 def is_valid_date(value: str) -> bool:
     """True when `value` is a real calendar date (see `parse_date`)."""
     return parse_date(value) is not None
+
+
+def is_flagged(signature_detected: str, valid_date: str) -> str:
+    """YES when the cheque needs a person to look at it: no signature found,
+    or the date read is not a real calendar date. Both inputs are YES/NO."""
+    return "YES" if signature_detected != "YES" or valid_date != "YES" else "NO"
 
 
 def _calendar_valid(digits: str) -> bool:
@@ -236,13 +215,15 @@ def _write_digit_confidence_csv(output_dir: Path, top_candidates: list[list[tupl
 
 
 def _trim_right_to_ink(
-    image: np.ndarray, box: tuple[int, int, int, int], typical_height: float
+    image: np.ndarray, box: tuple[int, int, int, int], unit: float, anchor_x: float
 ) -> tuple[tuple[int, int, int, int], str]:
-    """Pull the crop's right edge in to the last handwritten stroke.
+    """Pull the crop's right edge in to the last handwritten stroke, so the
+    hatched pattern at the cheque's right edge stays out.
 
-    Strokes are connected blobs darker than `digit_ink_threshold` that are
-    big enough to be part of a digit and not wider than a few digits (which
-    would be a printed line). Returns the new box and a short note.
+    Strokes are blobs darker than `digit_ink_threshold` (the same test
+    digit_segmentation uses), big enough to be part of a digit and not wider
+    than one digit box. The edge never moves left of the sixth box
+    (`date_row_min_length_units`), so a faint last digit is not cut off.
     """
     x0, y0, x1, y1 = box
     crop = image[y0:y1, x0:x1]
@@ -251,19 +232,18 @@ def _trim_right_to_ink(
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
     ink = (gray < settings.digit_ink_threshold).astype(np.uint8)
     count, _, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
-    crop_height = y1 - y0
     right_edges = [
         int(left + w)
         for left, _, w, h, area in stats[1:count]
-        if area >= 25 and h >= 0.08 * crop_height and w <= 2.5 * typical_height
+        if area >= 25 and h >= 0.08 * (y1 - y0) and w <= 1.2 * unit
     ]
-    min_x1 = x0 + typical_height * settings.date_field_min_width_typical_heights
+    min_x1 = anchor_x + settings.date_row_min_length_units * unit
     if right_edges:
-        new_x1 = x0 + max(right_edges) + typical_height * settings.date_field_ink_right_margin_heights
+        new_x1 = x0 + max(right_edges) + settings.date_row_ink_margin_units * unit
         note = "right edge trimmed to handwriting"
     else:
-        new_x1 = x0 + typical_height * settings.date_field_blank_width_typical_heights
-        note = "no handwriting found; blank-box width used"
+        new_x1 = anchor_x + settings.date_row_blank_length_units * unit
+        note = "no handwriting found"
     new_x1 = int(min(x1, max(min_x1, new_x1)))
     return (x0, y0, new_x1, y1), note
 
@@ -272,26 +252,25 @@ def find_crop_box(
     image: np.ndarray, lines: list[dict[str, Any]]
 ) -> tuple[tuple[int, int, int, int], str, str, bool]:
     """Where the handwritten date is: (x0, y0, x1, y1), how it was found,
-    the label text it was anchored on, and whether one label line was
-    estimated. Used by `extract` and by diagnostics/check_date_crop.py."""
+    the label text it was anchored on, and whether TARIKH had to be inferred
+    from DATE. Used by `extract` and by diagnostics/check_date_crop.py."""
     image_shape = image.shape
     tarikh, date = _find_label_lines(lines, image_shape)
     if tarikh is None and date is None:
         return _template_date_zone(image_shape), "Public Bank upper-right fallback", "", False
-    crop_box, bounds_estimated = _right_of_labels(tarikh, date, lines, image_shape)
-    trim_note = ""
+    unit, anchor_x, top_y, note = _label_geometry(tarikh, date, image_shape)
+    crop_box = _date_row_box(unit, anchor_x, top_y, image_shape)
+    notes = [note] if note else []
     if settings.date_field_trim_to_ink:
-        typical_height = _typical_line_height(lines) or max(1.0, crop_box[3] - crop_box[1])
-        crop_box, trim_note = _trim_right_to_ink(image, crop_box, typical_height)
+        crop_box, trim_note = _trim_right_to_ink(image, crop_box, unit, anchor_x)
+        notes.append(trim_note)
     found_texts = [str(line["text"]) for line in (tarikh, date) if line is not None]
     anchor_text = " / ".join(dict.fromkeys(found_texts))
     found_labels = [name for name, line in (("TARIKH", tarikh), ("DATE", date)) if line is not None]
-    anchor_mode = "OCR/fuzzy " + "+".join(found_labels) + " anchor"
-    if bounds_estimated:
-        anchor_mode += " (one line estimated from the other)"
-    if trim_note:
-        anchor_mode += f"; {trim_note}"
-    return crop_box, anchor_mode, anchor_text, bounds_estimated
+    anchor_mode = "+".join(found_labels) + f" label (unit {unit:.0f}px)"
+    if any(notes):
+        anchor_mode += "; " + "; ".join(n for n in notes if n)
+    return crop_box, anchor_mode, anchor_text, tarikh is None
 
 
 def extract(

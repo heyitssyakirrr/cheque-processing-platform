@@ -112,64 +112,62 @@ class Settings(BaseSettings):
     normal upper-right label area (see the `weak_wn` check in
     `date_extraction._score_candidates`)."""
 
-    date_label_line_gap_ratio: float = 0.2
-    """Vertical crop bound = TARIKH's own top edge to DATE's own bottom edge
-    (see `_vertical_bounds_from_labels` docstring for why). If only one line
-    is found, the other's edge is estimated as this many typical
-    single-line-heights away, plus this calibrated gap below."""
+    # Date-box geometry. Unit = printed width of the word TARIKH (about 108px
+    # on a 2010px-wide image). The printed label scales with the cheque, so
+    # these hold at any image size. Measured on Public Bank cheques: the six
+    # boxes start at TARIKH's right edge and are ~0.78 units apart; their top
+    # is ~0.2 units above TARIKH's top; the printed "D D M M Y Y" under them
+    # starts ~0.8 units below TARIKH's top. Check any change with
+    # diagnostics/check_date_crop.py.
+    date_row_start_units: float = 0.04
+    """Start this far right of TARIKH's right edge: the italic H leans into
+    the gap, and any sliver of it would be read as a stroke. The first box's
+    digit sits well inside the box, so nothing is lost."""
 
-    date_field_vertical_safety_pad_ratio: float = 0.6
-    """Small safety margin added above/below the measured label span, since
-    handwritten digits can slightly overshoot the printed label's own
-    height. Deliberately much smaller than the old fixed multipliers --
-    those existed to compensate for using only one, possibly-wrong edge;
-    with both edges measured directly this only needs to cover natural
-    handwriting variance."""
+    date_row_length_units: float = 4.75
+    """Search area: from TARIKH's right edge to the end of the sixth box."""
 
-    date_field_bottom_extra_pad_ratio: float = 0.25
-    """Extra padding added only below DATE's own bottom edge, on top of the
-    symmetric safety pad above. Handwritten descenders and closed loops (a
-    looped '6' or '2') extend further down than a printed line's own bottom
-    edge predicts -- asymmetric on purpose; the top edge needs no
-    equivalent since TARIKH's top edge has no handwriting above it."""
+    date_row_top_pad_units: float = 0.3
+    """Crop top: this far above the top of TARIKH."""
 
-    date_field_width_typical_heights: float = 20.0
-    """Horizontal crop width, expressed in multiples of the document's
-    typical single-line text height (a stable, format-invariant reference --
-    see `_typical_line_height`), not the anchor label's own box height.
-    17 cut off the sixth digit box on Public Bank cheques. This is the
-    search area: the right edge is then trimmed to the handwriting (below).
-    """
+    date_row_bottom_units: float = 0.78
+    """Crop bottom: this far below the top of TARIKH (just above "D D M M Y Y")."""
 
     date_field_trim_to_ink: bool = True
-    """Trim the crop's right edge to the last handwritten stroke plus
-    `date_field_ink_right_margin_heights`, so the hatched pattern at the
-    cheque's right edge stays out. Strokes are pixels darker than
-    `digit_ink_threshold`, the same test digit_segmentation uses."""
+    """Pull the right edge in to the last handwritten stroke plus
+    `date_row_ink_margin_units`, so the hatched pattern at the cheque's right
+    edge stays out. Strokes are pixels darker than `digit_ink_threshold`."""
 
-    date_field_ink_right_margin_heights: float = 0.8
-    """Space kept to the right of the last stroke, in typical line heights."""
+    date_row_ink_margin_units: float = 0.25
+    """Space kept right of the last stroke."""
 
-    date_field_min_width_typical_heights: float = 12.0
-    """The trim never makes the crop narrower than this (protects a faint
-    last digit that is lighter than the ink threshold)."""
+    date_row_min_length_units: float = 4.45
+    """The trim never cuts the crop shorter than this (inside the sixth box),
+    so a faint last digit is kept."""
 
-    date_field_blank_width_typical_heights: float = 18.0
-    """Crop width when no handwriting is found at all (a blank date box)."""
+    date_row_blank_length_units: float = 4.6
+    """Crop length when no handwriting is found (blank date boxes)."""
 
-    date_field_max_width_fraction: float = 0.55
-    date_field_max_height_fraction: float = 0.32
-    """Hard ceiling on the date crop, independent of anything OCR reports,
-    as a last line of defense against any future anchor-measurement error.
-    Expressed as a fraction of the (already format-normalised) page size."""
+    date_label_unit_page_fraction: float = 0.0535
+    """Expected TARIKH width as a fraction of the image width. Only a sanity
+    check: a measured width outside `date_label_unit_tolerance` x this (OCR
+    misread the label) is replaced by it."""
+
+    date_label_unit_tolerance: tuple[float, float] = (0.7, 1.4)
+
+    date_label_date_width_units: float = 1.23
+    date_label_date_right_gap_units: float = 0.05
+    date_label_tarikh_height_units: float = 0.3
+    """When only DATE is found: its box (which includes the printed Chinese
+    characters) is this many units wide, ends this far left of TARIKH's right
+    edge, and its top is this far below TARIKH's top."""
 
     ocr_zone_left_fraction: float = 0.40
     ocr_zone_top_fraction: float = 0.00
     ocr_zone_bottom_fraction: float = 0.45
     """Region OCR is restricted to when locating the TARIKH/DATE labels.
     Deliberately wider than `_template_date_zone` (0.60-0.99 x, 0.10-0.38 y)
-    so the printed labels and enough neighbouring lines stay in frame for
-    `_typical_line_height` to remain representative."""
+    so the printed labels stay in frame."""
 
     date_use_template_zone: bool = False
     """Debug aid only. When true, skips OCR and takes the date field from

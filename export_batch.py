@@ -12,15 +12,15 @@ import csv
 import shutil
 from datetime import datetime
 
-from app.services.date_extraction import is_valid_date
+from app.services.date_extraction import is_flagged, is_valid_date
 from app.settings import settings
 
 OUTPUT_FOLDER_NAME = "batch output"
 
 
 def _copy_with_valid_date(source, target) -> None:
-    """Copy the output CSV, adding a valid_date (YES/NO) column right after
-    date when the batch was processed before that column existed."""
+    """Copy the output CSV, adding valid_date and is_flagged (YES/NO) right
+    after date when the batch was processed before those columns existed."""
     with source.open(newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
         fields = list(reader.fieldnames or [])
@@ -29,6 +29,10 @@ def _copy_with_valid_date(source, target) -> None:
         fields.insert(fields.index("date") + 1, "valid_date")
         for row in rows:
             row["valid_date"] = "YES" if is_valid_date(row.get("date", "")) else "NO"
+    if "is_flagged" not in fields and "valid_date" in fields:
+        fields.insert(fields.index("valid_date") + 1, "is_flagged")
+        for row in rows:
+            row["is_flagged"] = is_flagged(row.get("signature_detected", ""), row["valid_date"])
     with target.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()

@@ -100,6 +100,7 @@ flowchart LR
 | Signature detections | Bounding boxes (`x1, y1, x2, y2`) and confidence for up to 2 candidates. |
 | `date` | Handwritten date formatted as `DD/MM/YY`. |
 | `valid_date` | `YES` / `NO`. Whether `date` is a real calendar date. |
+| `is_flagged` | `YES` when `signature_detected` is `NO` or `valid_date` is `NO` (needs a person to check), else `NO`. |
 | `date_status` | `date_candidate` (valid calendar date), `needs_review` (best guess, invalid or uncertain), or `empty_crop`. |
 | `raw_digits` | The six classified digits with no separators, e.g. `160926`. |
 | `date_confidence` | The **weakest** per-digit probability (a date is only as trustworthy as its least certain digit). |
@@ -605,8 +606,8 @@ Run from the project folder against a batch already processed with `SAVE_ARTIFAC
 
 | Script | What it does |
 |---|---|
-| `python diagnostics/check_date_crop.py --batch-id 20261113` | Re-crops every cheque's date box with the current settings and writes `data/batches/<id>/date crop check/`: one `<run>.png` per cheque (NEW crop above the OLD `date/crop.png`), `_all_new.png` with every new crop, and `_summary.csv`. |
-| `python export_batch.py --batch-id 20261113` | Copies the output CSV (adding `valid_date` if missing) and every `original/cheque.png` to `data/batches/<id>/batch output/`. |
+| `python diagnostics/check_date_crop.py --batch-id 20261113` | Re-crops every cheque's date box with the current settings and writes `data/batches/<id>/date crop check/`: one `<run>.png` per cheque (NEW crop, WHERE it sits on the cheque as a red box, and the OLD `date/crop.png`), `_all_new.png` with every new crop, and `_summary.csv`. |
+| `python export_batch.py --batch-id 20261113` | Copies the output CSV (adding `valid_date` and `is_flagged` if missing) and every `original/cheque.png` to `data/batches/<id>/batch output/`. |
 
 ### Tests
 
@@ -645,6 +646,7 @@ One row per successfully processed cheque, appended live and fsynced.
 | `signature_detected` | `YES` / `NO`. |
 | `date` | Handwritten date, `DD/MM/YY`. |
 | `valid_date` | `YES` if `date` is a real calendar date (two-digit years are 20YY), else `NO` — e.g. `88/55/28` or a blank date box. |
+| `is_flagged` | `YES` if no signature was found or the date is not valid, else `NO`. |
 | `start_time`, `end_time` | Wall-clock processing window for this cheque. |
 | `duration_seconds` | Total processing time. |
 | `pixels` | Original image size, `WIDTHxHEIGHT`. |

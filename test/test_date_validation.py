@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import run  # noqa: E402
 
-from app.services.date_extraction import is_valid_date, parse_date  # noqa: E402
+from app.services.date_extraction import is_flagged, is_valid_date, parse_date  # noqa: E402
 
 
 def test_valid_dates():
@@ -38,12 +38,26 @@ def test_export_adds_column_after_date():
 
     with tempfile.TemporaryDirectory() as folder:
         source, target = Path(folder) / "in.csv", Path(folder) / "out.csv"
-        source.write_text("cheque_id,date,error\nA,02/08/11,\nB,88/55/28,\n", encoding="utf-8")
+        source.write_text(
+            "cheque_id,signature_detected,date,error\nA,YES,02/08/11,\nB,YES,88/55/28,\nC,NO,02/08/11,\n",
+            encoding="utf-8",
+        )
         export_batch._copy_with_valid_date(source, target)
         with target.open(newline="", encoding="utf-8") as file:
             reader = csv.DictReader(file)
-            assert reader.fieldnames == ["cheque_id", "date", "valid_date", "error"]
-            assert [row["valid_date"] for row in reader] == ["YES", "NO"]
+            assert reader.fieldnames == [
+                "cheque_id", "signature_detected", "date", "valid_date", "is_flagged", "error",
+            ]
+            rows = list(reader)
+            assert [row["valid_date"] for row in rows] == ["YES", "NO", "YES"]
+            assert [row["is_flagged"] for row in rows] == ["NO", "YES", "YES"]
+
+
+def test_is_flagged():
+    assert is_flagged("YES", "YES") == "NO"
+    assert is_flagged("NO", "YES") == "YES"
+    assert is_flagged("YES", "NO") == "YES"
+    assert is_flagged("NO", "NO") == "YES"
 
 
 if __name__ == "__main__":
