@@ -248,29 +248,205 @@ def _trim_right_to_ink(
     return (x0, y0, new_x1, y1), note
 
 
+def _gray(image: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+
+
+def _fit_grid(centres: list[float], count: int = 6) -> tuple[float, float, int, float] | None:
+    """Fit `count` evenly spaced positions (start, pitch, in units) to the
+    detected guide-letter centres. Returns (start, pitch, inliers, mean
+    error) for the fit that explains the most letters, or None."""
+    low_pitch, high_pitch = settings.date_grid_pitch_units
+    low_start, high_start = settings.date_grid_start_units
+    tolerance = settings.date_grid_tolerance_units
+    best = None
+    ordered = sorted(centres)
+    for i, a in enumerate(ordered):
+        for b in ordered[i + 1:]:
+            for gap in range(1, count):
+                pitch = (b - a) / gap
+                if not low_pitch <= pitch <= high_pitch:
+                    continue
+                for index in range(count - gap):
+                    start = a - index * pitch
+                    if not low_start <= start <= high_start:
+                        continue
+                    hits = []
+                    for k in range(count):
+                        expected = start + k * pitch
+                        near = min(ordered, key=lambda c: abs(c - expected))
+                        if abs(near - expected) <= tolerance:
+                            hits.append((k, near))
+                    if len(hits) < 2:
+                        continue
+                    ks = np.array([h[0] for h in hits], dtype=float)
+                    cs = np.array([h[1] for h in hits], dtype=float)
+                    pitch_fit, start_fit = np.polyfit(ks, cs, 1)
+                    error = float(np.mean(np.abs(start_fit + ks * pitch_fit - cs)))
+                    key = (len(hits), -error)
+                    if best is None or key > best[0]:
+                        best = (key, (float(start_fit), float(pitch_fit), len(hits), error))
+    return best[1] if best else None
+
+
+def _find_guide_grid(
+    image: np.ndarray, unit: float, anchor_x: float, top_y: float
+) -> dict[str, Any] | None:
+    """Find the printed "D D M M Y Y" letters under the date boxes and fit
+    the six box positions to them, for this image only.
+
+    The letters are small, light printed marks, one centred under each box.
+    Their spacing in TARIKH-widths differs a little per image (0.77-0.84 on
+    the samples: OCR box jitter and scan scale), so fitting them beats any
+    fixed multiple. Several darkness thresholds are tried relative to the
+    local background, since scans differ in contrast.
+    """
+    gray = _gray(image)
+    height, width = gray.shape
+    y0 = max(0, int(top_y + settings.date_grid_letters_from_units * unit))
+    y1 = min(height, int(top_y + settings.date_grid_letters_to_units * unit))
+    x0, x1 = max(0, int(anchor_x)), min(width, int(anchor_x + 5.4 * unit))
+    band = gray[y0:y1, x0:x1]
+    if band.size == 0:
+        return None
+    background = float(np.median(band))
+    best = None
+    for drop in (25, 45, 65, 90):
+        threshold = background - drop
+        if threshold <= 0:
+            continue
+        mask = (band < threshold).astype(np.uint8)
+        count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        letters = [
+            (float(left + w / 2), int(top))
+            for left, top, w, h, area in stats[1:count]
+            if 0.05 * unit <= h <= 0.3 * unit and w <= 0.3 * unit and area >= 6
+        ]
+        if not letters:
+            continue
+        fit = _fit_grid([cx / unit for cx, _ in letters])
+        if fit is None:
+            continue
+        start, pitch, inliers, error = fit
+        if best is None or (inliers, -error) > (best["inliers"], -best["error"]):
+            tolerance = settings.date_grid_tolerance_units
+            tops = [
+                top for cx, top in letters
+                if min(abs(cx / unit - (start + k * pitch)) for k in range(6)) <= tolerance
+            ]
+            best = {
+                "start_units": start, "pitch_units": pitch, "inliers": inliers, "error": error,
+                "threshold": int(threshold), "letters": [(x0 + cx, y0 + top) for cx, top in letters],
+                "start_x": x0 + start * unit, "pitch_px": pitch * unit,
+                "letters_top": y0 + float(np.median(tops)), "band": (x0, y0, x1, y1),
+            }
+    if best is not None and best["inliers"] < settings.date_grid_min_letters:
+        best["rejected"] = True
+    return best
+
+
+def _grid_box(
+    grid: dict[str, Any], unit: float, top_y: float, image_shape: tuple[int, ...]
+) -> tuple[int, int, int, int]:
+    """Crop exactly the six boxes the grid found: half a pitch either side of
+    the first and last letter, from above the boxes to just above the letters."""
+    height, width = image_shape[:2]
+    half = grid["pitch_px"] / 2
+    inset = settings.date_grid_inset_units * unit
+    x0 = grid["start_x"] - half + inset
+    x1 = grid["start_x"] + 5 * grid["pitch_px"] + half - inset
+    y0 = top_y - settings.date_row_top_pad_units * unit
+    y1 = grid["letters_top"] - settings.date_grid_above_letters_units * unit
+    return max(0, int(x0)), max(0, int(y0)), min(width, int(x1)), min(height, int(y1))
+
+
+def _expand_to_handwriting(
+    image: np.ndarray, box: tuple[int, int, int, int], unit: float, top_y: float, bottom_limit: float
+) -> tuple[tuple[int, int, int, int], str]:
+    """Grow the crop up or down when a handwritten digit pokes out of it
+    (tall or low writing), never above `top_y - 0.75 units` or below
+    `bottom_limit`. Strokes: darker than `digit_ink_threshold`."""
+    x0, y0, x1, y1 = box
+    gray = _gray(image)
+    limit_top = max(0, int(top_y - 0.75 * unit))
+    limit_bottom = min(gray.shape[0], int(bottom_limit))
+    region = gray[limit_top:limit_bottom, x0:x1]
+    if region.size == 0:
+        return box, ""
+    ink = (region < settings.digit_ink_threshold).astype(np.uint8)
+    size = max(1, int(0.05 * unit))
+    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((size, size), np.uint8))
+    count, _, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    pad = 0.08 * unit
+    new_y0, new_y1 = y0, y1
+    for _, top, w, h, _ in stats[1:count]:
+        top, bottom = top + limit_top, top + limit_top + h
+        if h < 0.15 * unit or w > 1.3 * unit or bottom <= y0 or top >= y1:
+            continue  # not a stroke, or not touching the crop's rows
+        new_y0 = min(new_y0, int(top - pad))
+        new_y1 = max(new_y1, int(bottom + pad))
+    new_y0, new_y1 = max(limit_top, new_y0), min(limit_bottom, new_y1)
+    note = "grown to fit handwriting" if (new_y0, new_y1) != (y0, y1) else ""
+    return (x0, new_y0, x1, new_y1), note
+
+
+def plan_crop(image: np.ndarray, lines: list[dict[str, Any]]) -> dict[str, Any]:
+    """Every step of placing the date crop, for `extract` and the
+    diagnostics tools: the labels found, the unit, the guide-letter grid
+    (if found), the label-only box, and the final box and how it was made."""
+    image_shape = image.shape
+    plan: dict[str, Any] = {"tarikh": None, "date": None, "unit": None, "grid": None,
+                            "label_box": None, "grid_box": None, "notes": []}
+    tarikh, date = _find_label_lines(lines, image_shape)
+    plan.update(tarikh=tarikh, date=date)
+    if tarikh is None and date is None:
+        plan.update(box=_template_date_zone(image_shape), mode="fallback",
+                    description="Public Bank upper-right fallback (no TARIKH/DATE found)")
+        return plan
+
+    unit, anchor_x, top_y, note = _label_geometry(tarikh, date, image_shape)
+    plan.update(unit=unit, anchor_x=anchor_x, top_y=top_y)
+    if note:
+        plan["notes"].append(note)
+    label_box = _date_row_box(unit, anchor_x, top_y, image_shape)
+    trim_note = ""
+    if settings.date_field_trim_to_ink:
+        label_box, trim_note = _trim_right_to_ink(image, label_box, unit, anchor_x)
+    plan["label_box"] = label_box
+
+    box, mode = label_box, "label"
+    bottom_limit = top_y + settings.date_row_bottom_units * unit
+    if settings.date_crop_mode == "grid":
+        grid = _find_guide_grid(image, unit, anchor_x, top_y)
+        plan["grid"] = grid
+        if grid and not grid.get("rejected"):
+            box = plan["grid_box"] = _grid_box(grid, unit, top_y, image_shape)
+            mode, bottom_limit = "grid", box[3]
+            plan["notes"].append(f"grid from {grid['inliers']}/6 guide letters")
+        else:
+            plan["notes"].append("guide letters not found; label measurements used")
+    if mode == "label" and trim_note:
+        plan["notes"].append(trim_note)
+    if settings.date_crop_fit_handwriting:
+        box, fit_note = _expand_to_handwriting(image, box, unit, top_y, bottom_limit)
+        if fit_note:
+            plan["notes"].append(fit_note)
+
+    found = [name for name, line in (("TARIKH", tarikh), ("DATE", date)) if line is not None]
+    plan.update(box=box, mode=mode,
+                description="+".join(found) + f" label (unit {unit:.0f}px), {mode}; " + "; ".join(plan["notes"]))
+    return plan
+
+
 def find_crop_box(
     image: np.ndarray, lines: list[dict[str, Any]]
 ) -> tuple[tuple[int, int, int, int], str, str, bool]:
     """Where the handwritten date is: (x0, y0, x1, y1), how it was found,
     the label text it was anchored on, and whether TARIKH had to be inferred
-    from DATE. Used by `extract` and by diagnostics/check_date_crop.py."""
-    image_shape = image.shape
-    tarikh, date = _find_label_lines(lines, image_shape)
-    if tarikh is None and date is None:
-        return _template_date_zone(image_shape), "Public Bank upper-right fallback", "", False
-    unit, anchor_x, top_y, note = _label_geometry(tarikh, date, image_shape)
-    crop_box = _date_row_box(unit, anchor_x, top_y, image_shape)
-    notes = [note] if note else []
-    if settings.date_field_trim_to_ink:
-        crop_box, trim_note = _trim_right_to_ink(image, crop_box, unit, anchor_x)
-        notes.append(trim_note)
-    found_texts = [str(line["text"]) for line in (tarikh, date) if line is not None]
-    anchor_text = " / ".join(dict.fromkeys(found_texts))
-    found_labels = [name for name, line in (("TARIKH", tarikh), ("DATE", date)) if line is not None]
-    anchor_mode = "+".join(found_labels) + f" label (unit {unit:.0f}px)"
-    if any(notes):
-        anchor_mode += "; " + "; ".join(n for n in notes if n)
-    return crop_box, anchor_mode, anchor_text, tarikh is None
+    from DATE. See `plan_crop` for the steps."""
+    plan = plan_crop(image, lines)
+    found_texts = [str(line["text"]) for line in (plan["tarikh"], plan["date"]) if line is not None]
+    return plan["box"], plan["description"], " / ".join(dict.fromkeys(found_texts)), plan["tarikh"] is None
 
 
 def extract(
@@ -310,6 +486,10 @@ def extract(
         cv2.imwrite(str(output_dir / "crop.png"), crop)
 
     canonical_slices = digit_segmentation.slice_digits(crop, output_dir, digit_count=settings.digit_count)
+    if not canonical_slices:
+        result.update(status="no_date", validation=f"no handwriting in the date boxes; crop source: {anchor_mode}")
+        _write_csv(output_dir, result)
+        return result
     top_candidates = digit_classifier.classify_digits(canonical_slices, top_k=3)
     _write_digit_confidence_csv(output_dir, top_candidates)
 

@@ -607,6 +607,7 @@ Run from the project folder against a batch already processed with `SAVE_ARTIFAC
 | Script | What it does |
 |---|---|
 | `python diagnostics/check_date_crop.py --batch-id 20261113` | Re-crops every cheque's date box with the current settings and writes `data/batches/<id>/date crop check/`: one `<run>.png` per cheque (NEW crop, WHERE it sits on the cheque as a red box, and the OLD `date/crop.png`), `_all_new.png` with every new crop, and `_summary.csv`. |
+| `python diagnostics/explore_date_area.py --batch-id 20261113` | Shows step by step how the date area is found: every OCR box near the date with its text, TARIKH/DATE, the printed D D M M Y Y letters found and the six boxes fitted to them, the crop used and the label-only crop, what the digit reader sees in each (its ink mask, row and digit splits) and what it reads. Writes `data/batches/<id>/date area explore/` with `_summary.csv` (measurements per cheque). `--only 009 012` limits it to some cheques; `--no-read` skips the digit model. |
 | `python export_batch.py --batch-id 20261113` | Copies the output CSV (adding `valid_date` and `is_flagged` if missing) and every `original/cheque.png` to `data/batches/<id>/batch output/`. |
 
 ### Tests

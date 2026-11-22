@@ -148,6 +148,34 @@ class Settings(BaseSettings):
     date_row_blank_length_units: float = 4.6
     """Crop length when no handwriting is found (blank date boxes)."""
 
+    date_crop_mode: str = "grid"
+    """"grid": find the printed D D M M Y Y letters under the boxes and crop
+    exactly the six boxes they mark, for each image (falls back to "label"
+    when fewer than `date_grid_min_letters` are found). "label": the fixed
+    multiples of the TARIKH width above. Compare them with
+    diagnostics/explore_date_area.py."""
+
+    date_grid_min_letters: int = 4
+    date_grid_pitch_units: tuple[float, float] = (0.68, 0.95)
+    date_grid_start_units: tuple[float, float] = (0.2, 0.65)
+    date_grid_tolerance_units: float = 0.1
+    """Guide-letter grid fit: at least this many of the six letters found,
+    letters this far apart (the box pitch), the first one this far right of
+    TARIKH, and each letter within this distance of its fitted position."""
+
+    date_grid_letters_from_units: float = 0.68
+    date_grid_letters_to_units: float = 1.12
+    """Rows searched for the guide letters, below the top of TARIKH."""
+
+    date_grid_inset_units: float = 0.03
+    """Stay this far inside the outer edges of the first and last box."""
+
+    date_grid_above_letters_units: float = 0.04
+    """Crop bottom: this far above the top of the guide letters."""
+
+    date_crop_fit_handwriting: bool = True
+    """Grow the crop up/down when a handwritten digit pokes out of it."""
+
     date_label_unit_page_fraction: float = 0.0535
     """Expected TARIKH width as a fraction of the image width. Only a sanity
     check: a measured width outside `date_label_unit_tolerance` x this (OCR
@@ -194,12 +222,25 @@ class Settings(BaseSettings):
     digit_count: int = 6
     """Expected number of handwritten date digits per cheque (DDMMYY)."""
 
+    digit_ink_ceiling: int = 170
+    """The digit reader thresholds each date crop automatically (Otsu) but
+    never counts a pixel lighter than this as ink, so grey printed boxes and
+    background pattern are not read as digits. Pen ink measured 47-123 at
+    its darkest; grey date boxes ~185."""
+
+    digit_min_ink_span: float = 0.35
+    """Ink spanning less than this share of the crop's width = blank date
+    (a printed mark or speck in one box, not six written digits)."""
+
+    digit_min_ink_fraction: float = 0.003
+    """Less ink than this share of the crop = blank date (status no_date,
+    empty date, so valid_date NO and is_flagged YES)."""
+
     digit_ink_threshold: int = 140
     """Fixed (not Otsu-adaptive) grayscale cutoff below which a pixel counts
-    as ink. Real ink is near-black; gray shading/gradient bleed elsewhere in
-    the crop is lighter gray. Otsu picks its threshold dynamically per image
-    and can be pulled toward including that shading as "foreground" -- a
-    fixed cutoff isn't swayed by what else happens to be in the crop."""
+    as a pen stroke when placing the crop (trim to handwriting, grow to fit
+    handwriting); the reader itself uses Otsu capped at `digit_ink_ceiling`.
+    Real ink is near-black; grey shading elsewhere in the crop is lighter."""
 
     # ------------------------------------------------------------------
     # 5. Preprocessing

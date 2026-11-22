@@ -30,7 +30,7 @@ PREFIX = "Cheque_Processing"
 BRANCH = "uat-008"
 PROJECT = Path(__file__).resolve().parents[1]
 SKIP = {".venv", "__pycache__", ".git", "data", "tools", "models"}
-TESTS = ["test_fetch.py", "test_ingestion_retention.py", "test_date_validation.py"]
+TESTS = ["test_fetch.py", "test_ingestion_retention.py", "test_date_validation.py", "test_date_crop.py"]
 
 _RULES = [
     (re.compile(r"^(\s*)from app(?=[. ])", re.MULTILINE), rf"\1from {PREFIX}.app"),

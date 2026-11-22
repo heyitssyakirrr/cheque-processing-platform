@@ -30,8 +30,17 @@ from app.settings import settings
 
 
 def _binarize(gray: np.ndarray) -> np.ndarray:
-    """Otsu-threshold once; ink -> 255, background -> 0."""
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    """Otsu-threshold once, capped at `digit_ink_ceiling`; ink -> 255.
+
+    Otsu alone always splits the crop in two, even when there is no ink:
+    on a blank date with grey printed boxes it marked the grey boxes
+    (~185) as ink, and the reader then "read" six solid blocks. Pen ink is
+    far darker (the darkest 1% of a handwritten crop measured 47-123), so
+    nothing lighter than the ceiling counts as ink.
+    """
+    otsu, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    threshold = min(float(otsu), float(settings.digit_ink_ceiling))
+    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
     return binary
 
 
@@ -192,6 +201,47 @@ def _normalize_digit(binary_slice: np.ndarray, canvas_size: int = 128) -> np.nda
     return canvas
 
 
+def explain(date_crop: np.ndarray, digit_count: int = 6) -> dict:
+    """What slice_digits sees in a crop, for diagnostics and slicing alike:
+    the Otsu ink mask, the chosen digit row (top, bottom), the ink's
+    left/right edges inside that row, and the digit lanes (x ranges
+    relative to `left`). `row` is the binary row the lanes cut up."""
+    gray = cv2.cvtColor(date_crop, cv2.COLOR_BGR2GRAY) if date_crop.ndim == 3 else date_crop
+    binary = _binarize(gray)
+    if np.count_nonzero(binary) < settings.digit_min_ink_fraction * binary.size:
+        # Blank date boxes (or a speck of dirt): nothing to read.
+        return {"binary": binary, "bands": [], "top": 0, "bottom": binary.shape[0],
+                "left": 0, "right": 0, "row": binary[:, :0], "lanes": [], "blank": True}
+    # Stage 1: isolate the handwritten digit row, then trim to its ink
+    # bounding box so crop margin can never distort lane math downstream.
+    bands = _row_bands(binary)
+    top, bottom = _select_digit_band(binary, bands)
+    row_pad = max(2, int((bottom - top) * 0.08))
+    top, bottom = max(0, top - row_pad), min(binary.shape[0], bottom + row_pad)
+    row = binary[top:bottom, :]
+    xs = np.nonzero(row.sum(axis=0))[0]
+    if len(xs) == 0:
+        return {"binary": binary, "bands": bands, "top": top, "bottom": bottom,
+                "left": 0, "right": 0, "row": row[:, :0], "lanes": []}
+    left, right = int(xs.min()), int(xs.max()) + 1
+    # Span of the middle 95% of the ink, so a lone speck at one end does not
+    # make a single printed mark look like a row of digits.
+    mass = np.cumsum(row.sum(axis=0), dtype=np.float64)
+    span = np.searchsorted(mass, 0.975 * mass[-1]) - np.searchsorted(mass, 0.025 * mass[-1])
+    if span < settings.digit_min_ink_span * binary.shape[1]:
+        # Ink in one small spot (a printed mark, a speck), not a written
+        # date across the boxes: nothing to read.
+        return {"binary": binary, "bands": bands, "top": top, "bottom": bottom,
+                "left": left, "right": right, "row": row[:, :0], "lanes": [], "blank": True}
+    col_pad = max(2, int((right - left) * 0.01))
+    left, right = max(0, left - col_pad), min(row.shape[1], right + col_pad)
+    row = row[:, left:right]
+    # Stage 2: cluster ink into exactly `digit_count` characters.
+    lanes = _cluster_into_digits(row, digit_count)
+    return {"binary": binary, "bands": bands, "top": top, "bottom": bottom,
+            "left": left, "right": right, "row": row, "lanes": lanes}
+
+
 def slice_digits(
     date_crop: np.ndarray,
     output_dir: Path,
@@ -200,39 +250,20 @@ def slice_digits(
     """Split a date-row crop into `digit_count` normalized square digit images.
 
     Saves each slice to `output_dir/digits/digit_<i>.png` and returns the
-    in-memory canonical images (white ink on black, centered, square).
+    in-memory canonical images (white ink on black, centered, square), or
+    an empty list when the crop holds no handwriting (blank date).
     """
-    gray = cv2.cvtColor(date_crop, cv2.COLOR_BGR2GRAY) if date_crop.ndim == 3 else date_crop
-    binary = _binarize(gray)
+    seen = explain(date_crop, digit_count)
 
     save_artifacts = settings.save_artifacts
     digits_dir = output_dir / "digits"
     if save_artifacts:
         digits_dir.mkdir(parents=True, exist_ok=True)
 
-    # Stage 1: isolate the handwritten digit row, then trim to its ink
-    # bounding box so crop margin can never distort lane math downstream.
-    bands = _row_bands(binary)
-    top, bottom = _select_digit_band(binary, bands)
-    row_pad = max(2, int((bottom - top) * 0.08))
-    top, bottom = max(0, top - row_pad), min(binary.shape[0], bottom + row_pad)
-    row = binary[top:bottom, :]
+    if not seen["lanes"]:
+        return []  # no handwriting in the crop: the caller reports "no date"
 
-    xs = np.nonzero(row.sum(axis=0))[0]
-    if len(xs) == 0:
-        canonical_slices = [np.zeros((128, 128), dtype=np.uint8) for _ in range(digit_count)]
-        if save_artifacts:
-            for i, canonical in enumerate(canonical_slices):
-                cv2.imwrite(str(digits_dir / f"digit_{i}.png"), canonical)
-        return canonical_slices
-
-    left, right = int(xs.min()), int(xs.max()) + 1
-    col_pad = max(2, int((right - left) * 0.01))
-    left, right = max(0, left - col_pad), min(row.shape[1], right + col_pad)
-    row = row[:, left:right]
-
-    # Stage 2: cluster ink into exactly `digit_count` characters.
-    clusters = _cluster_into_digits(row, digit_count)
+    row, clusters = seen["row"], seen["lanes"]
 
     canonical_slices = []
     for i, (x0, x1) in enumerate(clusters):
