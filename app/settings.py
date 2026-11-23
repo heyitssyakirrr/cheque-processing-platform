@@ -163,6 +163,15 @@ class Settings(BaseSettings):
     letters this far apart (the box pitch), the first one this far right of
     TARIKH, and each letter within this distance of its fitted position."""
 
+    date_grid_min_letters_without_label: int = 5
+    date_grid_letter_offset_units: float = 0.43
+    date_grid_letters_below_units: float = 0.86
+    """When OCR finds neither TARIKH nor DATE, the guide letters are searched
+    for across the upper right (at least this many of six, evenly spaced and
+    not among other marks), and TARIKH is placed from them: the first letter
+    ~0.43 units right of TARIKH's right edge, their tops ~0.86 units below
+    TARIKH's top (measured on the samples)."""
+
     date_grid_letters_from_units: float = 0.68
     date_grid_letters_to_units: float = 1.12
     """Rows searched for the guide letters, below the top of TARIKH."""
@@ -227,6 +236,10 @@ class Settings(BaseSettings):
     never counts a pixel lighter than this as ink, so grey printed boxes and
     background pattern are not read as digits. Pen ink measured 47-123 at
     its darkest; grey date boxes ~185."""
+
+    digit_ink_min_contrast: float = 50.0
+    """...and never closer than this to the crop's background (median) grey
+    level, so a darker scan's blank boxes are not ink either."""
 
     digit_min_ink_span: float = 0.35
     """Ink spanning less than this share of the crop's width = blank date

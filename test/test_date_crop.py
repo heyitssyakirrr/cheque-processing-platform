@@ -67,5 +67,36 @@ def test_six_written_digits_are_read_as_six():
     assert not seen.get("blank") and len(seen["lanes"]) == 6
 
 
+def test_blank_boxes_on_a_darker_scan_are_not_ink():
+    # Darker scan: blank boxes ~150 with texture down to ~120, all below the
+    # 170 ceiling; only ink clearly darker than the background counts.
+    rng = np.random.default_rng(0)
+    crop = (150 + rng.integers(-30, 10, size=(120, 600))).astype(np.uint8)
+    assert digit_segmentation.explain(crop).get("blank")
+
+
+def _page_for_search(with_asterisks: bool) -> np.ndarray:
+    page = np.full((1000, 2000, 3), 240, np.uint8)
+    unit = 2000 * 0.0535
+    if with_asterisks:  # a row of asterisks, as on a banker's cheque
+        for k in range(40):
+            cv2.putText(page, "*", (1000 + int(k * 0.16 * unit), 300), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (60, 60, 60), 2)
+    for k in range(6):  # the guide letters
+        cv2.putText(page, "D", (1500 + int(k * 0.8 * unit), 380), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (90, 90, 90), 1)
+    return page
+
+
+def test_guide_letters_found_without_any_label():
+    for asterisks in (False, True):
+        grid = date_extraction._search_guide_grid(_page_for_search(asterisks))
+        assert grid and grid["inliers"] == 6, (asterisks, grid)
+        assert 360 <= grid["letters_top"] <= 380, grid["letters_top"]  # the letters, not the asterisks
+
+
+def test_no_label_crop_uses_the_letters():
+    plan = date_extraction.plan_crop(_page_for_search(True), [])
+    assert plan["mode"] == "grid" and plan["box"][3] <= 380, plan
+
+
 if __name__ == "__main__":
     run([value for name, value in list(globals().items()) if name.startswith("test_")])

@@ -36,12 +36,20 @@ def _binarize(gray: np.ndarray) -> np.ndarray:
     on a blank date with grey printed boxes it marked the grey boxes
     (~185) as ink, and the reader then "read" six solid blocks. Pen ink is
     far darker (the darkest 1% of a handwritten crop measured 47-123), so
-    nothing lighter than the ceiling counts as ink.
+    nothing lighter than the ceiling counts as ink (see `ink_threshold`).
     """
-    otsu, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    threshold = min(float(otsu), float(settings.digit_ink_ceiling))
-    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+    _, binary = cv2.threshold(gray, ink_threshold(gray), 255, cv2.THRESH_BINARY_INV)
     return binary
+
+
+def ink_threshold(gray: np.ndarray) -> float:
+    """Otsu, but never lighter than `digit_ink_ceiling`, and at least
+    `digit_ink_min_contrast` darker than the crop's background (its median).
+    The contrast rule covers darker scans where blank grey boxes and their
+    texture are themselves darker than the ceiling."""
+    otsu, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    background = float(np.median(gray))
+    return min(float(otsu), float(settings.digit_ink_ceiling), background - settings.digit_ink_min_contrast)
 
 
 def _row_bands(binary: np.ndarray, min_gap_ratio: float = 0.02) -> list[tuple[int, int]]:

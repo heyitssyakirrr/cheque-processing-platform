@@ -252,12 +252,16 @@ def _gray(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
 
 
-def _fit_grid(centres: list[float], count: int = 6) -> tuple[float, float, int, float] | None:
+def _fit_grid(
+    centres: list[float], count: int = 6, start_range: tuple[float, float] | None = None
+) -> tuple[float, float, int, float] | None:
     """Fit `count` evenly spaced positions (start, pitch, in units) to the
     detected guide-letter centres. Returns (start, pitch, inliers, mean
-    error) for the fit that explains the most letters, or None."""
+    error) for the fit that explains the most letters, or None.
+    `start_range` limits where the first position may be (default: the
+    configured distance right of TARIKH)."""
     low_pitch, high_pitch = settings.date_grid_pitch_units
-    low_start, high_start = settings.date_grid_start_units
+    low_start, high_start = start_range or settings.date_grid_start_units
     tolerance = settings.date_grid_tolerance_units
     best = None
     ordered = sorted(centres)
@@ -345,6 +349,74 @@ def _find_guide_grid(
     return best
 
 
+def _search_guide_grid(image: np.ndarray) -> dict[str, Any] | None:
+    """When OCR found neither TARIKH nor DATE: look for the six D D M M Y Y
+    letters anywhere in the upper right, row by row, and infer where the
+    label must be from them (measured on the samples: the first letter is
+    ~0.43 TARIKH widths right of TARIKH, their tops ~0.86 below its top).
+
+    A row only counts when the six positions are not surrounded by other
+    small marks, so rows of asterisks (banker's cheques) or printed text are
+    not mistaken for the guide letters.
+    """
+    gray = _gray(image)
+    height, width = gray.shape
+    unit = width * settings.date_label_unit_page_fraction
+    x0, x1 = int(width * 0.45), width
+    y0, y1 = int(height * 0.05), int(height * 0.50)
+    region = gray[y0:y1, x0:x1]
+    if region.size == 0:
+        return None
+    background = float(np.median(region))
+    tolerance = settings.date_grid_tolerance_units
+    best = None
+    for drop in (15, 25, 35, 45, 65, 90):
+        threshold = background - drop
+        if threshold <= 0:
+            continue
+        mask = (region < threshold).astype(np.uint8)
+        count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        marks = sorted(
+            (float(top), float(left + w / 2))
+            for left, top, w, h, area in stats[1:count]
+            if 0.05 * unit <= h <= 0.3 * unit and w <= 0.3 * unit and area >= 6
+        )
+        rows: list[list[tuple[float, float]]] = []
+        for top, cx in marks:
+            if rows and abs(top - rows[-1][0][0]) <= 0.25 * unit:  # tilted scans drift
+                rows[-1].append((top, cx))
+            else:
+                rows.append([(top, cx)])
+        for row in rows:
+            if len(row) < settings.date_grid_min_letters_without_label:
+                continue
+            centres = [cx / unit for _, cx in row]
+            fit = _fit_grid(centres, start_range=(-1e9, 1e9))
+            if fit is None:
+                continue
+            start, pitch, inliers, error = fit
+            span = [c for c in centres if start - 0.5 * pitch <= c <= start + 5.5 * pitch]
+            extras = len(span) - inliers
+            if inliers < settings.date_grid_min_letters_without_label or extras > 2:
+                continue
+            key = (inliers, -extras, -error)
+            if best is None or key > best[0]:
+                tops = [top for top, cx in row
+                        if min(abs(cx / unit - (start + k * pitch)) for k in range(6)) <= tolerance]
+                letters_top = y0 + float(np.median(tops))
+                start_x = x0 + start * unit
+                best = (key, {
+                    "start_units": settings.date_grid_letter_offset_units, "pitch_units": pitch,
+                    "inliers": inliers, "error": error, "threshold": int(threshold),
+                    "letters": [(x0 + cx, y0 + top) for top, cx in row],
+                    "start_x": start_x, "pitch_px": pitch * unit, "letters_top": letters_top,
+                    "band": (x0, y0, x1, y1), "unit": unit,
+                    "anchor_x": start_x - settings.date_grid_letter_offset_units * unit,
+                    "top_y": letters_top - settings.date_grid_letters_below_units * unit,
+                })
+    return best[1] if best else None
+
+
 def _grid_box(
     grid: dict[str, Any], unit: float, top_y: float, image_shape: tuple[int, ...]
 ) -> tuple[int, int, int, int]:
@@ -400,8 +472,22 @@ def plan_crop(image: np.ndarray, lines: list[dict[str, Any]]) -> dict[str, Any]:
     tarikh, date = _find_label_lines(lines, image_shape)
     plan.update(tarikh=tarikh, date=date)
     if tarikh is None and date is None:
-        plan.update(box=_template_date_zone(image_shape), mode="fallback",
-                    description="Public Bank upper-right fallback (no TARIKH/DATE found)")
+        grid = _search_guide_grid(image)
+        plan["grid"] = grid
+        if grid is None:
+            plan.update(box=_template_date_zone(image_shape), mode="fallback",
+                        description="Public Bank upper-right fallback (no TARIKH/DATE or guide letters found)")
+            return plan
+        unit, top_y = grid["unit"], grid["top_y"]
+        plan.update(unit=unit, anchor_x=grid["anchor_x"], top_y=top_y)
+        box = plan["grid_box"] = _grid_box(grid, unit, top_y, image_shape)
+        plan["notes"].append(f"TARIKH/DATE not found; grid from {grid['inliers']}/6 guide letters alone")
+        if settings.date_crop_fit_handwriting:
+            box, fit_note = _expand_to_handwriting(image, box, unit, top_y, box[3])
+            if fit_note:
+                plan["notes"].append(fit_note)
+        plan.update(box=box, mode="grid",
+                    description=f"no label (unit {unit:.0f}px est.), grid; " + "; ".join(plan["notes"]))
         return plan
 
     unit, anchor_x, top_y, note = _label_geometry(tarikh, date, image_shape)

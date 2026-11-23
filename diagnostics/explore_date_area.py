@@ -20,8 +20,10 @@ Writes data/batches/<batch-id>/date area explore/:
                     where it splits the six digits), and the reading.
     _summary.csv one row per cheque: image size, TARIKH/DATE text and boxes,
                  TARIKH width (the unit), guide letters found, fitted box
-                 start and spacing (in TARIKH widths), both crop boxes, and
-                 both readings.
+                 start and spacing (in TARIKH widths), both crop boxes, both
+                 readings, and per crop its background grey, darkest 1%,
+                 the ink threshold used and the share of pixels counted as
+                 ink (a blank date should be ~0).
 """
 
 from __future__ import annotations
@@ -170,7 +172,15 @@ def _explore(run_dir: Path, export_dir: Path, read: bool) -> dict:
             continue
         big, mask = _reader_view(crop)
         reading = _read(crop) if read else ""
-        row["reading_" + name.split()[0].replace("-", "_")] = reading
+        key = name.split()[0].replace("-", "_")
+        row["reading_" + key] = reading
+        gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
+        threshold = digit_segmentation.ink_threshold(gray)
+        row.update({
+            f"{key}_background": int(np.median(gray)), f"{key}_darkest_1pct": int(np.percentile(gray, 1)),
+            f"{key}_ink_threshold": int(threshold),
+            f"{key}_ink_share": round(float((gray <= threshold).mean()), 4),
+        })
         panels.append((f"{name.upper()} crop   {reading}", big))
         panels.append((f"{name} - what the digit reader sees", mask))
 
