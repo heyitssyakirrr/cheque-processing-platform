@@ -21,9 +21,10 @@ Writes data/batches/<batch-id>/date area explore/:
     _summary.csv one row per cheque: image size, TARIKH/DATE text and boxes,
                  TARIKH width (the unit), guide letters found, fitted box
                  start and spacing (in TARIKH widths), both crop boxes, both
-                 readings, and per crop its background grey, darkest 1%,
-                 the ink threshold used and the share of pixels counted as
-                 ink (a blank date should be ~0).
+                 readings, and per crop: background grey, darkest 1%, the
+                 stroke threshold and share of pixels it keeps, the stricter
+                 blank threshold and its share (a blank date should be ~0),
+                 and whether the crop counts as blank and why.
 """
 
 from __future__ import annotations
@@ -176,10 +177,14 @@ def _explore(run_dir: Path, export_dir: Path, read: bool) -> dict:
         row["reading_" + key] = reading
         gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
         threshold = digit_segmentation.ink_threshold(gray)
+        strict = digit_segmentation.blank_threshold(gray)
         row.update({
             f"{key}_background": int(np.median(gray)), f"{key}_darkest_1pct": int(np.percentile(gray, 1)),
-            f"{key}_ink_threshold": int(threshold),
-            f"{key}_ink_share": round(float((gray <= threshold).mean()), 4),
+            f"{key}_stroke_threshold": int(threshold),
+            f"{key}_stroke_share": round(float((gray <= threshold).mean()), 4),
+            f"{key}_blank_threshold": int(strict),
+            f"{key}_dark_share": round(float((gray <= strict).mean()), 4),
+            f"{key}_blank": digit_segmentation.blank_reason(gray) or "no",
         })
         panels.append((f"{name.upper()} crop   {reading}", big))
         panels.append((f"{name} - what the digit reader sees", mask))

@@ -30,26 +30,47 @@ from app.settings import settings
 
 
 def _binarize(gray: np.ndarray) -> np.ndarray:
-    """Otsu-threshold once, capped at `digit_ink_ceiling`; ink -> 255.
-
-    Otsu alone always splits the crop in two, even when there is no ink:
-    on a blank date with grey printed boxes it marked the grey boxes
-    (~185) as ink, and the reader then "read" six solid blocks. Pen ink is
-    far darker (the darkest 1% of a handwritten crop measured 47-123), so
-    nothing lighter than the ceiling counts as ink (see `ink_threshold`).
-    """
+    """The digit strokes: pixels at or below `ink_threshold`; ink -> 255."""
     _, binary = cv2.threshold(gray, ink_threshold(gray), 255, cv2.THRESH_BINARY_INV)
     return binary
 
 
 def ink_threshold(gray: np.ndarray) -> float:
-    """Otsu, but never lighter than `digit_ink_ceiling`, and at least
-    `digit_ink_min_contrast` darker than the crop's background (its median).
-    The contrast rule covers darker scans where blank grey boxes and their
-    texture are themselves darker than the ceiling."""
+    """Threshold for cutting out the digit strokes: Otsu, but never lighter
+    than `digit_ink_ceiling`.
+
+    Otsu alone always splits the crop in two, even when there is no ink: on
+    a blank date with grey printed boxes it marked the grey boxes (~185) as
+    ink. Pen ink is far darker (darkest 1% of a written crop: 47-123). Kept
+    deliberately generous so the faint edges of a stroke stay part of the
+    digit; blank detection uses the stricter `blank_threshold` instead.
+    """
     otsu, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    background = float(np.median(gray))
-    return min(float(otsu), float(settings.digit_ink_ceiling), background - settings.digit_ink_min_contrast)
+    return min(float(otsu), float(settings.digit_ink_ceiling))
+
+
+def blank_threshold(gray: np.ndarray) -> float:
+    """Stricter threshold used only to decide whether anything is written:
+    `ink_threshold`, and also at least `digit_ink_min_contrast` darker than
+    the crop's background (median), so a darker scan's blank boxes and
+    their texture do not count. Never used to cut out the strokes."""
+    return min(ink_threshold(gray), float(np.median(gray)) - settings.digit_ink_min_contrast)
+
+
+def blank_reason(gray: np.ndarray) -> str:
+    """"" when something is written in the crop, otherwise why it counts as
+    blank: almost no clearly dark pixels, or all of them in one small spot
+    (a printed mark, a speck) rather than across the boxes."""
+    strict = gray <= blank_threshold(gray)
+    if np.count_nonzero(strict) < settings.digit_min_ink_fraction * strict.size:
+        return "no ink"
+    # Span of the middle 95% of the dark pixels, so a lone speck at one end
+    # does not make a single mark look like a row of digits.
+    mass = np.cumsum(strict.sum(axis=0), dtype=np.float64)
+    span = np.searchsorted(mass, 0.975 * mass[-1]) - np.searchsorted(mass, 0.025 * mass[-1])
+    if span < settings.digit_min_ink_span * strict.shape[1]:
+        return "ink in one spot only"
+    return ""
 
 
 def _row_bands(binary: np.ndarray, min_gap_ratio: float = 0.02) -> list[tuple[int, int]]:
@@ -216,10 +237,11 @@ def explain(date_crop: np.ndarray, digit_count: int = 6) -> dict:
     relative to `left`). `row` is the binary row the lanes cut up."""
     gray = cv2.cvtColor(date_crop, cv2.COLOR_BGR2GRAY) if date_crop.ndim == 3 else date_crop
     binary = _binarize(gray)
-    if np.count_nonzero(binary) < settings.digit_min_ink_fraction * binary.size:
-        # Blank date boxes (or a speck of dirt): nothing to read.
+    reason = blank_reason(gray)
+    if reason:
+        # Blank date boxes, a printed mark or a speck: nothing to read.
         return {"binary": binary, "bands": [], "top": 0, "bottom": binary.shape[0],
-                "left": 0, "right": 0, "row": binary[:, :0], "lanes": [], "blank": True}
+                "left": 0, "right": 0, "row": binary[:, :0], "lanes": [], "blank": reason}
     # Stage 1: isolate the handwritten digit row, then trim to its ink
     # bounding box so crop margin can never distort lane math downstream.
     bands = _row_bands(binary)
@@ -232,15 +254,6 @@ def explain(date_crop: np.ndarray, digit_count: int = 6) -> dict:
         return {"binary": binary, "bands": bands, "top": top, "bottom": bottom,
                 "left": 0, "right": 0, "row": row[:, :0], "lanes": []}
     left, right = int(xs.min()), int(xs.max()) + 1
-    # Span of the middle 95% of the ink, so a lone speck at one end does not
-    # make a single printed mark look like a row of digits.
-    mass = np.cumsum(row.sum(axis=0), dtype=np.float64)
-    span = np.searchsorted(mass, 0.975 * mass[-1]) - np.searchsorted(mass, 0.025 * mass[-1])
-    if span < settings.digit_min_ink_span * binary.shape[1]:
-        # Ink in one small spot (a printed mark, a speck), not a written
-        # date across the boxes: nothing to read.
-        return {"binary": binary, "bands": bands, "top": top, "bottom": bottom,
-                "left": left, "right": right, "row": row[:, :0], "lanes": [], "blank": True}
     col_pad = max(2, int((right - left) * 0.01))
     left, right = max(0, left - col_pad), min(row.shape[1], right + col_pad)
     row = row[:, left:right]

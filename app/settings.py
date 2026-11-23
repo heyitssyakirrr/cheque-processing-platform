@@ -231,15 +231,19 @@ class Settings(BaseSettings):
     digit_count: int = 6
     """Expected number of handwritten date digits per cheque (DDMMYY)."""
 
-    digit_ink_ceiling: int = 170
-    """The digit reader thresholds each date crop automatically (Otsu) but
-    never counts a pixel lighter than this as ink, so grey printed boxes and
-    background pattern are not read as digits. Pen ink measured 47-123 at
-    its darkest; grey date boxes ~185."""
+    digit_ink_ceiling: int = 255
+    """Digit strokes are pixels darker than min(Otsu, this). 255 = plain
+    Otsu, which keeps the faint edges of each stroke: on a faint sample a
+    ceiling of 170 already opened the tops of 0s and 6s, and 150 broke them.
+    Blank dates are decided separately (`digit_ink_min_contrast`), so no
+    ceiling is needed for that. Compare values with
+    diagnostics/compare_ink_settings.py."""
 
     digit_ink_min_contrast: float = 50.0
-    """...and never closer than this to the crop's background (median) grey
-    level, so a darker scan's blank boxes are not ink either."""
+    """Only for deciding whether a date is blank (never for cutting out the
+    strokes): a pixel must also be this much darker than the crop's
+    background (median) grey, so a darker scan's blank boxes do not count.
+    Compare values with diagnostics/compare_ink_settings.py."""
 
     digit_min_ink_span: float = 0.35
     """Ink spanning less than this share of the crop's width = blank date
