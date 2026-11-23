@@ -69,7 +69,8 @@ def _plan_panel(image: np.ndarray, plan: dict, lines: list[dict]) -> np.ndarray:
     height, width = image.shape[:2]
     unit = plan["unit"] or 0.05 * width
     final = plan["box"]
-    left = min(final[0], *(date_extraction._bounds(l["box"])[0] for l in (plan["tarikh"], plan["date"]) if l))
+    label_lefts = [date_extraction._bounds(l["box"])[0] for l in (plan["tarikh"], plan["date"]) if l]
+    left = min([final[0], *label_lefts])  # no labels found: start at the crop
     region = (max(0, int(left - 0.5 * unit)), max(0, int(final[1] - 1.2 * unit)),
               width, min(height, int(final[3] + 1.0 * unit)))
     scale = 1.4
@@ -200,7 +201,10 @@ def main(argv: list[str] | None = None) -> int:
     export_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for run_dir in run_dirs:
-        row = _explore(run_dir, export_dir, read=not args.no_read)
+        try:
+            row = _explore(run_dir, export_dir, read=not args.no_read)
+        except Exception as error:  # one odd cheque must not stop the rest
+            row = {"run": run_dir.name, "note": f"tool error: {type(error).__name__}: {error}"}
         rows.append(row)
         print(f"{row['run']}: {row.get('mode', '-')} {row.get('reading_used', '')} {row.get('notes', row.get('note', ''))}")
 
