@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -17,6 +18,25 @@ OUTPUT_FIELDS = [
     "duration_seconds", "pixels", "t_read", "t_preprocess",
     "t_signature", "t_ocr", "t_date", "error",
 ]
+
+
+def set_aside_old_format(batch_dir: Path) -> Path | None:
+    """A batch folder made by the old ZIP version (its manifest has no
+    source_path column) can never be resumed: rename it to
+    <date>_old_format_<time>, never delete it. Returns the new path."""
+    manifest = batch_dir / "manifest.db"
+    if not manifest.is_file():
+        return None
+    db = sqlite3.connect(manifest)
+    try:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(cheques)")}
+    finally:
+        db.close()
+    if not columns or "source_path" in columns:
+        return None
+    target = batch_dir.with_name(f"{batch_dir.name}_old_format_{datetime.now():%Y%m%d%H%M%S}")
+    batch_dir.rename(target)
+    return target
 
 
 class Manifest:

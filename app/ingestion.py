@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from contextlib import contextmanager
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,29 @@ def read_fetch_marker(day_dir: Path) -> dict[str, Any]:
     if not marker.is_file():
         raise FetchNotComplete(f"No {FETCH_MARKER} in {day_dir}: job 1 has not finished this day")
     return json.loads(marker.read_text(encoding="utf-8"))
+
+
+def write_manual_marker(day_dir: Path, banks: list[str]) -> int:
+    """For files put into data/incoming/<date>/<bank>/ by hand (job 2
+    --manual): write the same _FETCH_COMPLETE.json job 1 writes, listing
+    every .IMG file there now. Returns how many files it lists."""
+    files = {
+        f"{bank}/{path.name}": path.stat().st_size
+        for bank in banks
+        for path in sorted((day_dir / bank).glob("*"))
+        if path.is_file() and is_image_name(path.name)
+    }
+    if not files:
+        loose = [p.name for p in day_dir.glob("*") if p.is_file() and is_image_name(p.name)]
+        hint = f" ({len(loose)} .IMG file(s) found directly in {day_dir}: move them into a bank folder)" if loose else ""
+        raise RuntimeError(f"No .IMG files in {day_dir}/{{{','.join(banks)}}}/{hint}")
+    write_json_atomic(day_dir / FETCH_MARKER, {
+        "batch_id": day_dir.name, "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        "source": "manual (files put in this folder by hand)",
+        "banks": sorted({cheque_id.split("/")[0] for cheque_id in files}),
+        "total_files": len(files), "files": files,
+    })
+    return len(files)
 
 
 def inventory_day(day_dir: Path, banks: list[str]) -> list[InventoryItem]:

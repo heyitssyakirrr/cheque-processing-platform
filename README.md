@@ -611,6 +611,20 @@ Run from the project folder against a batch already processed with `SAVE_ARTIFAC
 | `python diagnostics/compare_ink_settings.py --batch-id 20261113` | Experiment for the digit reader's two ink settings (`DIGIT_INK_CEILING` for the strokes, `DIGIT_INK_MIN_CONTRAST` for deciding a date is blank): reads every cheque with every combination and, once you fill in the real dates (`--write-truth` creates `truth.csv`), scores them. Writes `data/batches/<id>/ink settings/` (readings, scores, and pictures of the strokes kept at each ceiling). |
 | `python export_batch.py --batch-id 20261113` | Copies the output CSV (adding `valid_date` and `is_flagged` if missing) and every `original/cheque.png` to `data/batches/<id>/batch output/`. |
 
+### Processing a folder by hand (no SFTP)
+
+To process images you already have (for example an old batch, or a test), put
+them in `data/incoming/<date>/PBB/` and `data/incoming/<date>/PIBB/`, then:
+
+```bash
+python jobs/job2_process_cheques.py --date 20261113 --manual
+python export_batch.py --batch-id 20261113
+```
+
+`--manual` lists the `.IMG` files in those folders and processes them without
+waiting for job 1. A `data/batches/<date>/` folder left by the old ZIP version
+is renamed to `<date>_old_format_<time>` (never deleted).
+
 ### Tests
 
 ```bash

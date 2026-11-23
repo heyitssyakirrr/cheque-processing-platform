@@ -11,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import DATE, TempProject, run  # noqa: E402
 
 from app import fetch, retention  # noqa: E402
-from app.ingestion import FetchNotComplete, fingerprint, inventory_day, write_json_atomic  # noqa: E402
-from app.manifest import Manifest  # noqa: E402
+from app.ingestion import (  # noqa: E402
+    FetchNotComplete, fingerprint, inventory_day, write_json_atomic, write_manual_marker,
+)
+from app.manifest import Manifest, set_aside_old_format  # noqa: E402
 from app.settings import settings  # noqa: E402
 
 
@@ -105,6 +107,50 @@ def test_retention_zero_keeps_everything():
         settings.incoming_retention_days = 0
         _day_folders("20250101", finished=("20250101",))
         assert retention.apply_retention(today=date(2026, 11, 19))["incoming_deleted"] == []
+
+
+def test_manual_marker_lists_hand_copied_files():
+    with TempProject():
+        day = settings.incoming_day_dir(DATE)
+        for bank, names in (("PBB", ["A.IMG", "b.img"]), ("PIBB", ["C.IMG"])):
+            (day / bank).mkdir(parents=True)
+            for name in names:
+                (day / bank / name).write_bytes(b"x" * 10)
+        (day / "PBB" / "notes.txt").write_text("not a cheque")
+        assert write_manual_marker(day, settings.banks) == 3
+        items = inventory_day(day, settings.banks)
+        assert [i.cheque_id for i in items] == ["PBB/A.IMG", "PBB/b.img", "PIBB/C.IMG"]
+
+
+def test_manual_marker_refuses_an_empty_day():
+    with TempProject():
+        day = settings.incoming_day_dir(DATE)
+        day.mkdir(parents=True)
+        (day / "LOOSE.IMG").write_bytes(b"x")
+        try:
+            write_manual_marker(day, settings.banks)
+        except RuntimeError as error:
+            assert "move them into a bank folder" in str(error)
+        else:
+            raise AssertionError("expected RuntimeError")
+
+
+def test_old_zip_batch_folder_is_set_aside():
+    import sqlite3
+
+    with TempProject():
+        batch_dir = settings.batch_dir(DATE)
+        batch_dir.mkdir(parents=True)
+        db = sqlite3.connect(batch_dir / "manifest.db")
+        db.execute("CREATE TABLE cheques (cheque_id TEXT PRIMARY KEY, zip_member TEXT, crc INTEGER)")
+        db.commit()
+        db.close()
+        moved = set_aside_old_format(batch_dir)
+        assert moved and moved.name.startswith(f"{DATE}_old_format_") and (moved / "manifest.db").is_file()
+        assert not batch_dir.exists()
+        # A current-format batch folder is left alone.
+        Manifest(batch_dir / "manifest.db", DATE, "abc", 3).close()
+        assert set_aside_old_format(batch_dir) is None and batch_dir.exists()
 
 
 if __name__ == "__main__":

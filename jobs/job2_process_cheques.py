@@ -2,14 +2,21 @@
 
     python jobs/job2_process_cheques.py              today minus DATE_OFFSET_DAYS
     python jobs/job2_process_cheques.py --date 20261119
+    python jobs/job2_process_cheques.py --date 20261113 --manual
 
 Reads data/incoming/<date>/ (written by job 1; refuses to start until its
 _FETCH_COMPLETE.json exists) and writes data/batches/<date>/<date>_output.csv
 as cheques finish. Run the same command again to resume after a crash.
 
+--manual: the .IMG files were copied into data/incoming/<date>/PBB/ and
+PIBB/ by hand (no job 1). Job 2 lists what is there and processes it.
+
+A batch folder left by the old ZIP version is renamed to
+<date>_old_format_<time> (never deleted) so the day can be processed afresh.
+
 Exit codes: 0 all done, 1 cheques left to retry (run again), 2 done but some
 cheques permanently failed (see <date>_failed.csv), 3 job 1 has not finished
-the day yet.
+the day yet, or (--manual) no .IMG files in the bank folders.
 """
 
 from __future__ import annotations
@@ -36,9 +43,11 @@ if settings.threads_per_worker:
 import torch  # noqa: E402
 
 from app.batch_date import add_date_argument, default_batch_date  # noqa: E402
-from app.ingestion import FetchNotComplete, batch_lock, fingerprint, inventory_day, write_json_atomic  # noqa: E402
+from app.ingestion import (  # noqa: E402
+    FetchNotComplete, batch_lock, fingerprint, inventory_day, write_json_atomic, write_manual_marker,
+)
 from app.job_log import setup_job_log  # noqa: E402
-from app.manifest import Manifest  # noqa: E402
+from app.manifest import Manifest, set_aside_old_format  # noqa: E402
 from app.pipeline import process  # noqa: E402
 from app.retention import BATCH_MARKER, apply_retention  # noqa: E402
 from app.services import digit_classifier, signature_detection, text_detection  # noqa: E402
@@ -188,11 +197,17 @@ def _run_tasks(manifest: Manifest, tasks: list[dict], workers: int, completion_d
                 submit()
 
 
-def run_batch(batch_id: str) -> int:
+def run_batch(batch_id: str, manual: bool = False) -> int:
     day_dir = settings.incoming_day_dir(batch_id)
     batch_dir = settings.batch_dir(batch_id)
     completion_dir, tmp_dir = batch_dir / "completion", batch_dir / "tmp"
     output_csv, failed_csv = batch_dir / f"{batch_id}_output.csv", batch_dir / f"{batch_id}_failed.csv"
+    if manual:
+        count = write_manual_marker(day_dir, settings.banks)
+        logger.info("--manual: using the %d .IMG file(s) in %s as they are (no job 1).", count, day_dir)
+    moved = set_aside_old_format(batch_dir)
+    if moved:
+        logger.warning("%s was made by the old ZIP version; moved to %s (nothing deleted).", batch_dir, moved)
     try:
         inventory = inventory_day(day_dir, settings.banks)
     except FetchNotComplete as error:
@@ -244,10 +259,17 @@ def run_batch(batch_id: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Job 2: process one day's fetched cheques, resumably.")
     add_date_argument(parser)
+    parser.add_argument("--manual", action="store_true",
+                        help="The .IMG files were put into data/incoming/<date>/<bank>/ by hand: "
+                             "use them as they are, without waiting for job 1")
     args = parser.parse_args(argv)
     batch_id = args.date or default_batch_date()
     setup_job_log("job2", batch_id)
-    code = run_batch(batch_id)
+    try:
+        code = run_batch(batch_id, manual=args.manual)
+    except RuntimeError as error:  # a problem with the input folder, explained in the message
+        logger.error("%s", error)
+        code = 3
     try:
         apply_retention()
     except Exception:  # Housekeeping must never change the batch's result.
