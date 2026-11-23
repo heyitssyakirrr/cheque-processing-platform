@@ -21,7 +21,7 @@ Every field can be overridden by an environment variable of the same name
 import math
 import re
 from pathlib import Path
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -383,6 +383,19 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
+    @field_validator(
+        "sftp_host", "sftp_username", "sftp_password", "sftp_key_path", "sftp_known_hosts",
+        "source_trigger_pattern", mode="before",
+    )
+    @classmethod
+    def _blank_if_only_a_comment(cls, value: object) -> object:
+        """`SFTP_HOST=   # note` in .env reads as the value "# note" (the
+        comment is only dropped after a real value). Treat it as blank, so a
+        comment is never used as a host name or password."""
+        if isinstance(value, str) and value.strip().startswith("#"):
+            return ""
+        return value
+
     @model_validator(mode="after")
     def _validate_worker_budget(self) -> "Settings":
         if self.worker_count < 0:
