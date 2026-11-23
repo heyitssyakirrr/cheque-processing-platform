@@ -22,6 +22,7 @@ the day yet, or (--manual) no .IMG files in the bank folders.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import logging
 import os
@@ -257,6 +258,7 @@ def run_batch(batch_id: str, manual: bool = False) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    faulthandler.enable()  # a crash inside a C library prints where, instead of dying silently
     parser = argparse.ArgumentParser(description="Job 2: process one day's fetched cheques, resumably.")
     add_date_argument(parser)
     parser.add_argument("--manual", action="store_true",

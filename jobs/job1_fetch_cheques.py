@@ -16,6 +16,7 @@ copied (run again later), 2 configuration problem (fix .env first).
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import logging
 import sys
 from pathlib import Path
@@ -31,6 +32,7 @@ logger = logging.getLogger("job1")
 
 
 def main(argv: list[str] | None = None) -> int:
+    faulthandler.enable()  # a crash inside a C library prints where, instead of dying silently
     parser = argparse.ArgumentParser(description="Job 1: fetch one day's cheque images from the source server.")
     add_date_argument(parser)
     parser.add_argument("--force", action="store_true", help="fetch the day again even if it is complete")
