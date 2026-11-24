@@ -679,7 +679,7 @@ Examples of all three files (output, answer key, scored) are in `docs/mockups/`.
 
 Written by `export_batch.py` when the batch folder has an `answer_key.csv`
 (create it with `python export_batch.py --batch-id <date> --write-answer-key`,
-then fill in `signature` YES/NO, `date` as `310811`, `31/08/2011` or `NO DATE`,
+then fill in `signature` YES/NO, `date` as `310811`, `31/08/2011`, `01 AUG 2011` or `NO DATE`,
 and an optional `note`; a leading zero Excel drops, e.g. `10811`, is understood).
 
 Columns: `no, bank, file_name, signature, signature_expected, signature_accuracy,

@@ -22,6 +22,7 @@ key says, 1/0 accuracy per row, then TOTAL and PERCENTAGE rows.
 from __future__ import annotations
 
 import csv
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -138,12 +139,34 @@ def write_csv(path: Path, fields: list[str], rows: Iterable[dict[str, Any]]) -> 
 
 # --- answer key and scoring ---------------------------------------------------
 
+MONTHS = {name: number for number, names in enumerate((
+    ("JAN", "JANUARY"), ("FEB", "FEBRUARY"), ("MAR", "MARCH"), ("APR", "APRIL"), ("MAY",), ("JUN", "JUNE"),
+    ("JUL", "JULY"), ("AUG", "AUGUST"), ("SEP", "SEPT", "SEPTEMBER"), ("OCT", "OCTOBER"),
+    ("NOV", "NOVEMBER"), ("DEC", "DECEMBER"),
+), start=1) for name in names}
+
+
+def _named_month_date(value: str) -> str | None:
+    """"01 AUG 2011", "1-Aug-11", "01 August 2011" -> "01/08/2011"; else None."""
+    parts = re.split(r"[\s/.\-]+", value.strip().upper())
+    if len(parts) != 3 or parts[1] not in MONTHS or not parts[0].isdigit() or not parts[2].isdigit():
+        return None
+    year = int(parts[2]) + (2000 if len(parts[2]) == 2 else 0)
+    parsed = parse_date(f"{int(parts[0]):02d}{MONTHS[parts[1]]:02d}{year:04d}")
+    return parsed.strftime("%d/%m/%Y") if parsed else None
+
+
 def expected_date(text: str) -> str:
     """An answer-key date as NO DATE or DD/MM/YYYY. Accepts 310811, 31082011,
-    31/08/11, 31/08/2011, and the leading zero Excel drops (10811 = 010811)."""
+    31/08/11, 31/08/2011, the leading zero Excel drops (10811 = 010811), and
+    a month name as on a stamp or as Excel shows dates (01 AUG 2011,
+    1-Aug-11, 01 August 2011)."""
     value = (text or "").strip()
     if value.upper().replace(" ", "") in {"NODATE", "BLANK", "EMPTY", "-"}:
         return NO_DATE
+    named = _named_month_date(value)
+    if named:
+        return named
     digits = value.replace("/", "").replace("-", "").replace(".", "").replace(" ", "")
     if digits.isdigit() and len(digits) in (5, 7):
         digits = "0" + digits  # Excel turned 010811 into 10811

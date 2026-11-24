@@ -72,6 +72,15 @@ def test_answer_dates_in_any_form():
     for text in ("310811", "31082011", "31/08/11", "31/08/2011", "31-08-2011"):
         assert report.expected_date(text) == "31/08/2011", text
     assert report.expected_date("10811") == "01/08/2011"  # Excel dropped the leading zero of 010811
+    for text in ("01 AUG 2011", "1-Aug-11", "01 August 2011", "01/aug/2011"):  # stamps, Excel's display
+        assert report.expected_date(text) == "01/08/2011", text
+    for text in ("31 SEP 2011", "01 XYZ 2011"):
+        try:
+            report.expected_date(text)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(text)
     for text in ("NO DATE", "no date", "blank", "-"):
         assert report.expected_date(text) == "NO DATE"
 
