@@ -674,6 +674,9 @@ Outputs written before this layout are converted to it automatically (by job 2 w
 
 ### Scored report: `batch output/<date>_scored.csv`
 
+UAT only: production has no answer key, so only `<date>_output.csv` is exported there.
+Examples of all three files (output, answer key, scored) are in `docs/mockups/`.
+
 Written by `export_batch.py` when the batch folder has an `answer_key.csv`
 (create it with `python export_batch.py --batch-id <date> --write-answer-key`,
 then fill in `signature` YES/NO, `date` as `310811`, `31/08/2011` or `NO DATE`,
@@ -690,7 +693,7 @@ not scored.
 
 ### Failure CSV: `<date>_failed.csv`
 
-Columns: `batch_id, cheque_id, bank_code, sequence, attempts, last_error`. Lists only cheques that exhausted `MAX_ATTEMPTS`.
+Columns: `batch_date, no, bank, file_name, attempts, last_error`. Lists only cheques that exhausted `MAX_ATTEMPTS`.
 
 ### `result.json` (per cheque when `SAVE_ARTIFACTS=true`, abridged and illustrative)
 
