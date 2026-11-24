@@ -26,7 +26,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from app.settings import settings
+from Cheque_Processing.app.settings import settings
 
 
 def _binarize(gray: np.ndarray) -> np.ndarray:

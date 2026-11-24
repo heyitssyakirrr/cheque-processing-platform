@@ -41,10 +41,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.services import date_extraction, digit_segmentation  # noqa: E402
-from app.settings import settings  # noqa: E402
+from Cheque_Processing.app.services import date_extraction, digit_segmentation  # noqa: E402
+from Cheque_Processing.app.settings import settings  # noqa: E402
 
 OUTPUT_FOLDER_NAME = "ink settings"
 SCALE = 2.5
@@ -63,7 +63,7 @@ def _caption(image: np.ndarray, text: str, width: int) -> np.ndarray:
 
 def _read(big: np.ndarray, ceiling: float, contrast: float) -> tuple[str, str]:
     """(reading for the table, raw digits or 'blank')."""
-    from app.services import digit_classifier
+    from Cheque_Processing.app.services import digit_classifier
 
     saved = settings.digit_ink_ceiling, settings.digit_ink_min_contrast
     settings.digit_ink_ceiling, settings.digit_ink_min_contrast = ceiling, contrast

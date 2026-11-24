@@ -32,11 +32,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.services import date_extraction  # noqa: E402
-from app.services.date_extraction import find_crop_box  # noqa: E402
-from app.settings import settings  # noqa: E402
+from Cheque_Processing.app.services import date_extraction  # noqa: E402
+from Cheque_Processing.app.services.date_extraction import find_crop_box  # noqa: E402
+from Cheque_Processing.app.settings import settings  # noqa: E402
 
 OUTPUT_FOLDER_NAME = "date crop check"
 SCALE = 2.5  # the same upscale job 2 applies before saving date/crop.png

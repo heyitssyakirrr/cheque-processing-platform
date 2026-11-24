@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.dates import parse_date
+from Cheque_Processing.app.dates import parse_date
 
 NO_DATE = "NO DATE"
 VALID, INVALID = "VALID", "INVALID"

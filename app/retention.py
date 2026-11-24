@@ -14,7 +14,7 @@ import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from app.settings import settings
+from Cheque_Processing.app.settings import settings
 
 BATCH_MARKER = "_BATCH_COMPLETE.json"
 

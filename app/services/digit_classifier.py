@@ -19,8 +19,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from app.services.digit_model import DigitCNN
-from app.settings import settings
+from Cheque_Processing.app.services.digit_model import DigitCNN
+from Cheque_Processing.app.settings import settings
 
 _model: Any | None = None
 _processor: Any | None = None

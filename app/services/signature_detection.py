@@ -10,7 +10,7 @@ import numpy as np
 from huggingface_hub import hf_hub_download
 from ultralytics import YOLO
 
-from app.settings import settings
+from Cheque_Processing.app.settings import settings
 
 
 _model: YOLO | None = None

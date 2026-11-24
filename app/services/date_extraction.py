@@ -10,9 +10,9 @@ from typing import Any
 import cv2
 import numpy as np
 
-from app.dates import is_flagged, is_valid_date, parse_date  # noqa: F401  (re-exported)
-from app.services import digit_classifier, digit_segmentation
-from app.settings import settings
+from Cheque_Processing.app.dates import is_flagged, is_valid_date, parse_date  # noqa: F401  (re-exported)
+from Cheque_Processing.app.services import digit_classifier, digit_segmentation
+from Cheque_Processing.app.settings import settings
 
 
 def _normalise(value: str) -> str:

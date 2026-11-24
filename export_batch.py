@@ -22,8 +22,8 @@ import argparse
 import shutil
 from datetime import datetime
 
-from app import report
-from app.settings import settings
+from Cheque_Processing.app import report
+from Cheque_Processing.app.settings import settings
 
 OUTPUT_FOLDER_NAME = "batch output"
 ANSWER_KEY_NAME = "answer_key.csv"

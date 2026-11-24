@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import run  # noqa: E402
 
-from app.services import date_extraction, digit_segmentation  # noqa: E402
+from Cheque_Processing.app.services import date_extraction, digit_segmentation  # noqa: E402
 
 
 def test_fit_grid_with_missing_and_extra_letters():

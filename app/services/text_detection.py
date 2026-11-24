@@ -9,7 +9,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from app.settings import settings
+from Cheque_Processing.app.settings import settings
 
 logger = logging.getLogger(__name__)
 

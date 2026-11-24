@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.ingestion import InventoryItem
-from app.report import OUTPUT_FIELDS, normalize
+from Cheque_Processing.app.ingestion import InventoryItem
+from Cheque_Processing.app.report import OUTPUT_FIELDS, normalize
 
 
 

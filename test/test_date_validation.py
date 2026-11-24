@@ -13,9 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import DATE, TempProject, run  # noqa: E402
 
-from app import report  # noqa: E402
-from app.dates import is_flagged, is_valid_date, parse_date  # noqa: E402
-from app.settings import settings  # noqa: E402
+from Cheque_Processing.app import report  # noqa: E402
+from Cheque_Processing.app.dates import is_flagged, is_valid_date, parse_date  # noqa: E402
+from Cheque_Processing.app.settings import settings  # noqa: E402
 
 
 def test_valid_dates():

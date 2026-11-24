@@ -33,9 +33,9 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.settings import settings  # noqa: E402
+from Cheque_Processing.app.settings import settings  # noqa: E402
 
 if settings.threads_per_worker:
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
@@ -43,18 +43,18 @@ if settings.threads_per_worker:
 
 import torch  # noqa: E402
 
-from app.batch_date import add_date_argument, default_batch_date  # noqa: E402
-from app.ingestion import (  # noqa: E402
+from Cheque_Processing.app.batch_date import add_date_argument, default_batch_date  # noqa: E402
+from Cheque_Processing.app.ingestion import (  # noqa: E402
     FetchNotComplete, batch_lock, fingerprint, inventory_day, write_json_atomic, write_manual_marker,
 )
-from app.job_log import setup_job_log  # noqa: E402
-from app.manifest import Manifest, set_aside_old_format  # noqa: E402
-from app.pipeline import process  # noqa: E402
-from app.retention import BATCH_MARKER, apply_retention  # noqa: E402
-from app.services import digit_classifier, signature_detection, text_detection  # noqa: E402
-from app.report import output_row  # noqa: E402
-from app.services.img_conversion import convert_img_bytes_to_jpg  # noqa: E402
-from app.services.preprocessing import PreprocessOptions  # noqa: E402
+from Cheque_Processing.app.job_log import setup_job_log  # noqa: E402
+from Cheque_Processing.app.manifest import Manifest, set_aside_old_format  # noqa: E402
+from Cheque_Processing.app.pipeline import process  # noqa: E402
+from Cheque_Processing.app.retention import BATCH_MARKER, apply_retention  # noqa: E402
+from Cheque_Processing.app.services import digit_classifier, signature_detection, text_detection  # noqa: E402
+from Cheque_Processing.app.report import output_row  # noqa: E402
+from Cheque_Processing.app.services.img_conversion import convert_img_bytes_to_jpg  # noqa: E402
+from Cheque_Processing.app.services.preprocessing import PreprocessOptions  # noqa: E402
 
 logger = logging.getLogger("job2")
 

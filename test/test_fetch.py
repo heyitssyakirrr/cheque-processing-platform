@@ -14,9 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import DATE, TempProject, run  # noqa: E402
 
-from app import fetch  # noqa: E402
-from app.ingestion import FETCH_MARKER, inventory_day  # noqa: E402
-from app.settings import settings  # noqa: E402
+from Cheque_Processing.app import fetch  # noqa: E402
+from Cheque_Processing.app.ingestion import FETCH_MARKER, inventory_day  # noqa: E402
+from Cheque_Processing.app.settings import settings  # noqa: E402
 
 
 def _marker() -> dict:
