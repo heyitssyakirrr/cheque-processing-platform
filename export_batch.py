@@ -3,8 +3,8 @@ against an answer key when there is one.
 
     python export_batch.py --batch-id 20261113
         data/batches/20261113/batch output/ gets:
-          20261113_output.csv   the results (older layouts converted to the
-                                current columns, see app/report.py)
+          20261113_output.csv   the results, always (older layouts converted to
+                                the current columns, see app/report.py)
           <run>.png             each original cheque image
           20261113_scored.csv   only when data/batches/20261113/answer_key.csv
                                 exists: model vs answer, 1/0 accuracy per
@@ -69,25 +69,31 @@ def main(argv: list[str] | None = None) -> int:
         copied += 1
     print(f"Exported {output_csv.name} ({len(rows)} cheques) and {copied} cheque PNG(s) to {export_dir}")
 
+    scored_csv = export_dir / f"{batch_id}_scored.csv"
+    scored_csv.unlink(missing_ok=True)  # never leave a scored report from an earlier answer key
     if answer_key.is_file():
         try:
             answers = report.load_answers(answer_key)
+            scored = report.scored_rows(rows, answers)
         except ValueError as error:
-            print(f"Answer key not used: {error}")
+            print(f"No scored report: {error}")
             return 1
-        scored = report.scored_rows(rows, answers)
-        scored_csv = export_dir / f"{batch_id}_scored.csv"
         report.write_csv(scored_csv, report.SCORED_FIELDS, scored)
         total, percentage = scored[-2], scored[-1]
-        print(f"Scored against {len(answers)} answer(s): signature {total['signature_accuracy']} "
+        scored_count = sum(1 for r in rows if r["file_name"] in answers)
+        print(f"Scored {scored_count} cheque(s): signature {total['signature_accuracy']} "
               f"({percentage['signature_accuracy']}), date {total['date_accuracy']} ({percentage['date_accuracy']}), "
               f"flagged {total['flagged']} ({percentage['flagged']}) -> {scored_csv.name}")
         missing = [r["file_name"] for r in rows if r["file_name"] not in answers]
         if missing:
             print(f"Not in the answer key (shown, not scored): {len(missing)} cheque(s), e.g. {missing[0]}")
+        exported = {r["file_name"] for r in rows}
+        unused = sorted(name for name in answers if name not in exported)
+        if unused:
+            print(f"In the answer key but not in the output (failed or not processed; see "
+                  f"{batch_id}_failed.csv): {len(unused)} cheque(s), e.g. {unused[0]}")
     else:
-        print(f"No {ANSWER_KEY_NAME} in {batch_dir}: no scored report. "
-              f"Create one with --write-answer-key to measure accuracy.")
+        print(f"No {ANSWER_KEY_NAME} in the batch folder, so no scored report (normal outside UAT).")
     return 0
 
 

@@ -161,5 +161,48 @@ def test_export_converts_and_scores():
         assert (scored[3]["signature_accuracy"], scored[3]["date_accuracy"]) == ("50.0%", "100.0%")
 
 
+def _old_output(batch_dir: Path) -> None:
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    (batch_dir / f"{DATE}_output.csv").write_text(
+        "batch_id,cheque_id,bank_code,sequence,filename,signature_detected,date,valid_date,is_flagged,"
+        "start_time,end_time,duration_seconds,error\n"
+        f"{DATE},PBB/A.IMG,PBB,1,A.IMG,YES,31/08/11,YES,NO,2026-11-23 11:47:51,2026-11-23 11:47:58,7.1,\n",
+        encoding="utf-8")
+
+
+def test_production_without_answer_key_gets_output_only():
+    export_batch = _export_module()
+    with TempProject():
+        batch_dir = settings.batch_dir(DATE)
+        _old_output(batch_dir)
+        out = batch_dir / "batch output"
+        out.mkdir(parents=True)
+        stale = out / f"{DATE}_scored.csv"
+        stale.write_text("left from an earlier answer key", encoding="utf-8")
+        assert export_batch.main(["--batch-id", DATE]) == 0
+        assert (out / f"{DATE}_output.csv").is_file()
+        assert not stale.exists()  # no answer key now: no scored report, not even an old one
+
+
+def test_answer_key_saved_by_excel_in_windows_encoding():
+    with TempProject():
+        path = settings.batch_dir(DATE) / "answer_key.csv"
+        path.parent.mkdir(parents=True)
+        path.write_bytes("file_name,signature,date,note\nA.IMG,Y,10811,café stamp\n".encode("cp1252"))
+        answers = report.load_answers(path)
+        assert answers["A.IMG"] == {"signature": "YES", "date": "01/08/2011", "note": "café stamp"}
+
+
+def test_same_file_name_in_two_banks_is_refused():
+    rows = [_row(1, "A.IMG", True, "31/08/11"), _row(2, "A.IMG", True, "")]
+    rows[1]["bank"] = "PIBB"
+    try:
+        report.scored_rows(rows, {"A.IMG": {"signature": "YES", "date": "31/08/2011", "note": ""}})
+    except ValueError as error:
+        assert "more than one bank" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 if __name__ == "__main__":
     run([value for name, value in list(globals().items()) if name.startswith("test_")])

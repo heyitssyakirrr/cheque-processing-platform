@@ -162,26 +162,32 @@ def load_answers(path: Path) -> dict[str, dict[str, str]]:
     both signature and date empty are not filled in yet and are skipped.
     Raises ValueError listing every bad row."""
     answers, problems = {}, []
-    with path.open(newline="", encoding="utf-8-sig") as file:
-        for line, row in enumerate(csv.DictReader(file), start=2):
-            name = (row.get("file_name") or "").strip()
-            signature = (row.get("signature") or "").strip().upper()
-            date_text = (row.get("date") or "").strip()
-            if not name or (not signature and not date_text):
-                continue
-            if signature in {"Y", "1"}:
-                signature = "YES"
-            elif signature in {"N", "0"}:
-                signature = "NO"
-            if signature not in {"YES", "NO"}:
-                problems.append(f"line {line} ({name}): signature must be YES or NO, not {signature!r}")
-                continue
-            try:
-                date = expected_date(date_text)
-            except ValueError as error:
-                problems.append(f"line {line} ({name}): {error}")
-                continue
-            answers[name] = {"signature": signature, "date": date, "note": (row.get("note") or "").strip()}
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:  # Excel's "CSV (Comma delimited)" saves in the Windows code page
+        text = path.read_text(encoding="cp1252")
+    for line, row in enumerate(csv.DictReader(text.splitlines()), start=2):
+        name = (row.get("file_name") or "").strip()
+        signature = (row.get("signature") or "").strip().upper()
+        date_text = (row.get("date") or "").strip()
+        if not name or (not signature and not date_text):
+            continue
+        if signature in {"Y", "1"}:
+            signature = "YES"
+        elif signature in {"N", "0"}:
+            signature = "NO"
+        if signature not in {"YES", "NO"}:
+            problems.append(f"line {line} ({name}): signature must be YES or NO, not {signature!r}")
+            continue
+        try:
+            date = expected_date(date_text)
+        except ValueError as error:
+            problems.append(f"line {line} ({name}): {error}")
+            continue
+        if name in answers:
+            problems.append(f"line {line}: {name} is listed twice")
+            continue
+        answers[name] = {"signature": signature, "date": date, "note": (row.get("note") or "").strip()}
     if problems:
         raise ValueError(f"{path} has {len(problems)} problem(s): " + "; ".join(problems))
     return answers
@@ -191,7 +197,13 @@ def scored_rows(rows: list[dict[str, Any]], answers: dict[str, dict[str, str]]) 
     """Each output row with the answer and 1/0 accuracy, then TOTAL and
     PERCENTAGE rows. Date accuracy is strict: NO DATE is only right when the
     model also found no date; a date only when the model read that same,
-    valid date. Rows missing from the answer key are shown but not scored."""
+    valid date. Rows missing from the answer key are shown but not scored.
+    Raises ValueError when a file name appears in more than one bank."""
+    names = [row["file_name"] for row in rows]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"the same file name is in more than one bank ({', '.join(duplicates[:3])}), "
+                         "so the answer key cannot tell them apart")
     scored, sig_right, date_right, answered, flagged, seconds = [], 0, 0, 0, 0, 0.0
     for row in rows:
         out = {field: row.get(field, "") for field in SCORED_FIELDS}

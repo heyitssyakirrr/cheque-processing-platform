@@ -160,8 +160,12 @@ class Manifest:
         self.mark_emitted(cheque_id)
 
     def write_failures(self, path: Path) -> None:
-        fields = ["batch_id", "cheque_id", "bank_code", "sequence", "attempts", "last_error"]
-        _atomic_csv(path, fields, ({field: (self.batch_id if field == "batch_id" else row[field]) for field in fields} for row in self.failures()))
+        fields = ["batch_date", "no", "bank", "file_name", "attempts", "last_error"]
+        _atomic_csv(path, fields, ({
+            "batch_date": self.batch_id, "no": row["sequence"], "bank": row["bank_code"],
+            "file_name": row["cheque_id"].split("/", 1)[-1], "attempts": row["attempts"],
+            "last_error": row["last_error"],
+        } for row in self.failures()))
 
 
 def _atomic_csv(path: Path, fields: list[str], rows: Iterable[dict[str, Any]]) -> None:
