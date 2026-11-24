@@ -96,12 +96,12 @@ flowchart LR
 
 | Field | Description |
 | :--- | :--- |
-| `signature_detected` | `YES` / `NO`. Whether at least one YOLO detection met the decision threshold. |
-| Signature detections | Bounding boxes (`x1, y1, x2, y2`) and confidence for up to 2 candidates. |
-| `date` | Handwritten date formatted as `DD/MM/YY`. |
-| `valid_date` | `YES` / `NO`. Whether `date` is a real calendar date. |
-| `is_flagged` | `YES` when `signature_detected` is `NO` or `valid_date` is `NO` (needs a person to check), else `NO`. |
-| `date_status` | `date_candidate` (valid calendar date), `needs_review` (best guess, invalid or uncertain), or `empty_crop`. |
+| `signature` | `YES` / `NO`. Whether at least one YOLO detection met the decision threshold. |
+| Signature detections | Bounding boxes (`x1, y1, x2, y2`) and confidence for up to 2 candidates (`result.json`). |
+| `date` | `DD/MM/YYYY` when valid; what was read when invalid (e.g. `18/21/71`); `NO DATE` when nothing is written. |
+| `date_status` (output CSV) | `VALID`, `INVALID` or `NO DATE`. |
+| `flagged`, `flag_reason` | `YES` when a person should check the cheque, and why: `NO SIGNATURE`, `NO DATE`, `INVALID DATE`. |
+| `status` (`result.json`) | `date_candidate` (valid calendar date), `needs_review` (best guess, invalid or uncertain), or `empty_crop`. |
 | `raw_digits` | The six classified digits with no separators, e.g. `160926`. |
 | `date_confidence` | The **weakest** per-digit probability (a date is only as trustworthy as its least certain digit). |
 | Per-digit top-3 | For each of the 6 slots, the three most likely digits with probabilities. |
@@ -169,7 +169,7 @@ The original image is never modified.
 2. **YOLOv8** runs on the crop (`SIGNATURE_IMGSZ`, default 640; NMS IoU 0.70; at most 2 detections).
 3. Every candidate above a very low *logging floor* (1%) is recorded so you can inspect near-misses, but only candidates at or above the **decision threshold** (default `0.30`) are marked `accepted`.
 4. Box coordinates are translated back into the full-image frame using the crop offset, so annotations always land correctly on the full cheque.
-5. The cheque counts as `signature_detected = YES` if **any** candidate is accepted.
+5. The cheque counts as `signature = YES` if **any** candidate is accepted.
 
 The model is loaded once per process behind a lock. If the weights file is missing, the code can optionally download it from Hugging Face (`HF_YOLO_REPO_ID` + `HF_YOLO_FILENAME`).
 
@@ -609,7 +609,7 @@ Run from the project folder against a batch already processed with `SAVE_ARTIFAC
 | `python diagnostics/check_date_crop.py --batch-id 20261113` | Re-crops every cheque's date box with the current settings and writes `data/batches/<id>/date crop check/`: one `<run>.png` per cheque (NEW crop, WHERE it sits on the cheque as a red box, and the OLD `date/crop.png`), `_all_new.png` with every new crop, and `_summary.csv`. |
 | `python diagnostics/explore_date_area.py --batch-id 20261113` | Shows step by step how the date area is found: every OCR box near the date with its text, TARIKH/DATE, the printed D D M M Y Y letters found and the six boxes fitted to them, the crop used and the label-only crop, what the digit reader sees in each (its ink mask, row and digit splits) and what it reads. Writes `data/batches/<id>/date area explore/` with `_summary.csv` (measurements per cheque). `--only 009 012` limits it to some cheques; `--no-read` skips the digit model. |
 | `python diagnostics/compare_ink_settings.py --batch-id 20261113` | Experiment for the digit reader's two ink settings (`DIGIT_INK_CEILING` for the strokes, `DIGIT_INK_MIN_CONTRAST` for deciding a date is blank): reads every cheque with every combination and, once you fill in the real dates (`--write-truth` creates `truth.csv`), scores them. Writes `data/batches/<id>/ink settings/` (readings, scores, and pictures of the strokes kept at each ceiling). |
-| `python export_batch.py --batch-id 20261113` | Copies the output CSV (adding `valid_date` and `is_flagged` if missing) and every `original/cheque.png` to `data/batches/<id>/batch output/`. |
+| `python export_batch.py --batch-id 20261113` | Copies the output CSV (older layouts converted to the current columns) and every `original/cheque.png` to `data/batches/<id>/batch output/`; with an `answer_key.csv` in the batch folder also writes `<id>_scored.csv` (see Output Reference). `--write-answer-key` creates that file to fill in. |
 
 ### Processing a folder by hand (no SFTP)
 
@@ -654,20 +654,39 @@ One row per successfully processed cheque, appended live and fsynced.
 
 | Column | Description |
 | :--- | :--- |
-| `batch_id` | The batch (`YYYYMMDD`). |
-| `cheque_id` | Unique ID, `<bank>/<file name>` (e.g. `PBB/202610130233041011018120290009.IMG`). |
-| `bank_code` | `PBB` or `PIBB`. |
-| `sequence` | 1-based order within the day's sorted file list. |
-| `filename` | The `.IMG` file name. |
-| `signature_detected` | `YES` / `NO`. |
-| `date` | Handwritten date, `DD/MM/YY`. |
-| `valid_date` | `YES` if `date` is a real calendar date (two-digit years are 20YY), else `NO` — e.g. `88/55/28` or a blank date box. |
-| `is_flagged` | `YES` if no signature was found or the date is not valid, else `NO`. |
-| `start_time`, `end_time` | Wall-clock processing window for this cheque. |
-| `duration_seconds` | Total processing time. |
-| `pixels` | Original image size, `WIDTHxHEIGHT`. |
-| `t_read`, `t_preprocess`, `t_signature`, `t_ocr`, `t_date` | Per-stage timings in seconds, for spotting bottlenecks. |
+| `batch_date` | The batch (`YYYYMMDD`). |
+| `no` | 1-based order within the day's sorted file list. |
+| `bank` | `PBB` or `PIBB`. |
+| `file_name` | The `.IMG` file name. |
+| `signature` | `YES` / `NO`. |
+| `date` | `DD/MM/YYYY` when valid; what was read when invalid (e.g. `18/21/71`); `NO DATE` when the boxes are blank. |
+| `date_status` | `VALID`, `INVALID` (read, but not a real date: scribble, stamp, misread) or `NO DATE` (nothing written). |
+| `flagged` | `YES` when a person should check the cheque (no signature, or the date is not `VALID`), else `NO`. |
+| `flag_reason` | Why it is flagged: `NO SIGNATURE`, `NO DATE`, `INVALID DATE`, joined with `; `. |
+| `processed_on` | Date the cheque was processed (`YYYY-MM-DD`). |
+| `start_time`, `end_time` | `HH:MM:SS`, on their own so Excel shows the seconds. |
+| `duration_sec` | Total processing time in seconds. |
 | `error` | Empty on success. |
+| `image_size` | Original image size, `WIDTHxHEIGHT`. |
+| `t_read_sec`, `t_preprocess_sec`, `t_signature_sec`, `t_ocr_sec`, `t_date_sec` | Per-stage timings, for spotting bottlenecks. |
+
+Outputs written before this layout are converted to it automatically (by job 2 when it rebuilds the CSV, and by `export_batch.py`).
+
+### Scored report: `batch output/<date>_scored.csv`
+
+Written by `export_batch.py` when the batch folder has an `answer_key.csv`
+(create it with `python export_batch.py --batch-id <date> --write-answer-key`,
+then fill in `signature` YES/NO, `date` as `310811`, `31/08/2011` or `NO DATE`,
+and an optional `note`; a leading zero Excel drops, e.g. `10811`, is understood).
+
+Columns: `no, bank, file_name, signature, signature_expected, signature_accuracy,
+date, date_status, date_expected, date_accuracy, flagged, flag_reason, duration_sec, note`.
+Accuracy is `1`/`0` per cheque; dates are compared as dates and strictly: an
+expected `NO DATE` is only right when the model also found `NO DATE` (a
+scribble read as `INVALID` counts as wrong). The last two rows are `TOTAL`
+(e.g. `29/34`; flagged = how many `YES` of all cheques; total processing
+seconds) and `PERCENTAGE`. Cheques missing from the answer key are listed but
+not scored.
 
 ### Failure CSV: `<date>_failed.csv`
 

@@ -251,7 +251,7 @@ class Settings(BaseSettings):
 
     digit_min_ink_fraction: float = 0.003
     """Less ink than this share of the crop = blank date (status no_date,
-    empty date, so valid_date NO and is_flagged YES)."""
+    date NO DATE, so flagged YES)."""
 
     digit_ink_threshold: int = 140
     """Fixed (not Otsu-adaptive) grayscale cutoff below which a pixel counts

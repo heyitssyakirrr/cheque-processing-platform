@@ -52,7 +52,7 @@ from app.manifest import Manifest, set_aside_old_format  # noqa: E402
 from app.pipeline import process  # noqa: E402
 from app.retention import BATCH_MARKER, apply_retention  # noqa: E402
 from app.services import digit_classifier, signature_detection, text_detection  # noqa: E402
-from app.services.date_extraction import is_flagged, is_valid_date  # noqa: E402
+from app.report import output_row  # noqa: E402
 from app.services.img_conversion import convert_img_bytes_to_jpg  # noqa: E402
 from app.services.preprocessing import PreprocessOptions  # noqa: E402
 
@@ -100,21 +100,14 @@ def _process_one(task: dict) -> dict:
         convert_img_bytes_to_jpg(raw, jpeg)
         _, result = process(jpeg, task["options"], settings.signature_decision_threshold, 450,
                             task["batch_id"], task["sequence"], Path(task["source_path"]).name)
-        timings = result.get("timings", {})
-        signature = "YES" if result["signature"]["exists"] else "NO"
-        valid_date = "YES" if is_valid_date(result["date"]["date"]) else "NO"
-        row = {
-            "batch_id": task["batch_id"], "cheque_id": task["cheque_id"], "bank_code": task["bank_code"],
-            "sequence": task["sequence"], "filename": Path(task["source_path"]).name,
-            "signature_detected": signature, "date": result["date"]["date"],
-            "valid_date": valid_date, "is_flagged": is_flagged(signature, valid_date),
-            "start_time": started.strftime("%Y-%m-%d %H:%M:%S"),
-            "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "duration_seconds": round(time.perf_counter() - counter, 2), "pixels": result.get("pixels", ""),
-            "t_read": timings.get("read", ""), "t_preprocess": timings.get("preprocess", ""),
-            "t_signature": timings.get("signature", ""), "t_ocr": timings.get("ocr", ""),
-            "t_date": timings.get("date", ""), "error": "",
-        }
+        row = output_row(
+            batch_id=task["batch_id"], sequence=task["sequence"], bank=task["bank_code"],
+            file_name=Path(task["source_path"]).name, signature_found=result["signature"]["exists"],
+            raw_date=result["date"]["date"], started=started, ended=datetime.now(),
+            duration=time.perf_counter() - counter, timings=result.get("timings", {}),
+            image_size=result.get("pixels", ""),
+        )
+        row["cheque_id"] = task["cheque_id"]  # the manifest's key; not an output column
         _atomic_json(_completion_path(Path(task["completion_dir"]), task["cheque_id"]), row)
         return {"cheque_id": task["cheque_id"], "ok": True}
     except Exception as error:  # A bad scan must not end the whole batch.

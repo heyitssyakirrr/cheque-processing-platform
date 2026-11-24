@@ -11,13 +11,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from app.ingestion import InventoryItem
+from app.report import OUTPUT_FIELDS, normalize
 
-OUTPUT_FIELDS = [
-    "batch_id", "cheque_id", "bank_code", "sequence", "filename",
-    "signature_detected", "date", "valid_date", "is_flagged", "start_time", "end_time",
-    "duration_seconds", "pixels", "t_read", "t_preprocess",
-    "t_signature", "t_ocr", "t_date", "error",
-]
 
 
 def set_aside_old_format(batch_dir: Path) -> Path | None:
@@ -142,7 +137,7 @@ class Manifest:
 
     def _output_row(self, row: sqlite3.Row) -> dict[str, Any]:
         result = json.loads(row["result_json"])
-        return {field: result.get(field, "") for field in OUTPUT_FIELDS}
+        return normalize(result)  # also converts rows written before the current layout
 
     def rebuild_output(self, path: Path) -> None:
         _atomic_csv(path, OUTPUT_FIELDS, (self._output_row(row) for row in self.done_rows()))

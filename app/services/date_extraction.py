@@ -1,9 +1,7 @@
 """Find a printed date label with PaddleOCR, then classify each handwritten
 digit in the date row with a fine-tuned CNN (grid-sliced, not TrOCR)."""
 
-import calendar
 import csv
-import datetime as dt
 from difflib import SequenceMatcher
 import re
 from pathlib import Path
@@ -12,6 +10,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from app.dates import is_flagged, is_valid_date, parse_date  # noqa: F401  (re-exported)
 from app.services import digit_classifier, digit_segmentation
 from app.settings import settings
 
@@ -146,36 +145,6 @@ def _template_date_zone(image_shape: tuple[int, ...]) -> tuple[int, int, int, in
     """Fallback for a Public Bank image whose printed label is unreadable."""
     height, width = image_shape[:2]
     return int(width * 0.60), int(height * 0.10), int(width * 0.99), int(height * 0.38)
-
-
-def parse_date(value: str) -> dt.date | None:
-    """Turn a read date into a real date, or None if it is not one.
-
-    Accepts DDMMYY / DDMMYYYY, with or without "/", "-", "." or spaces
-    between the parts ("02/08/11", "020811", "02/08/2011"). Two-digit
-    years are 20YY. "88/55/28" -> None (no month 55); "31/02/11" -> None.
-    """
-    digits = re.sub(r"[\s/.\-]", "", str(value or ""))
-    if not digits.isdigit() or len(digits) not in (6, 8):
-        return None
-    day, month = int(digits[0:2]), int(digits[2:4])
-    year = int(digits[4:]) + (2000 if len(digits) == 6 else 0)
-    if not (1 <= month <= 12 and 1 <= year <= 9999):
-        return None
-    if not 1 <= day <= calendar.monthrange(year, month)[1]:
-        return None
-    return dt.date(year, month, day)
-
-
-def is_valid_date(value: str) -> bool:
-    """True when `value` is a real calendar date (see `parse_date`)."""
-    return parse_date(value) is not None
-
-
-def is_flagged(signature_detected: str, valid_date: str) -> str:
-    """YES when the cheque needs a person to look at it: no signature found,
-    or the date read is not a real calendar date. Both inputs are YES/NO."""
-    return "YES" if signature_detected != "YES" or valid_date != "YES" else "NO"
 
 
 def _calendar_valid(digits: str) -> bool:
